@@ -33,7 +33,6 @@ format:
     theme:
       light: cosmo
     css: styles.css
-    include-in-header: hyp.html
     include-after-body: keyboard-nav.html
 
 execute:
