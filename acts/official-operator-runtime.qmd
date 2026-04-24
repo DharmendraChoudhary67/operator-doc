@@ -1,0 +1,179 @@
+---
+title: "Official Valkey Operator"
+---
+
+The official operator follows a more layered design than the scratch-built operator. The most important difference is that it uses:
+
+- a user-facing `ValkeyCluster`
+- internal `ValkeyNode` resources that represent individual Valkey members
+
+This makes the runtime flow more detailed, but also more explicit.
+
+## The Two-Level Model
+
+At a high level:
+
+- `ValkeyCluster` describes the whole cluster
+- the operator calculates the topology
+- it creates one `ValkeyNode` per required Valkey member
+- the `ValkeyNode` controller then creates the actual workload for that member
+
+That means cluster intent and per-node workload management are separated.
+
+## Runtime Flow, Step by Step
+
+### 1. CRDs Are Already Installed
+
+Before the user does anything, the cluster already knows the custom resource definitions.
+
+That means Kubernetes understands that these resource kinds exist:
+
+- `ValkeyCluster`
+- `ValkeyNode`
+
+### 2. The User Applies `ValkeyCluster`
+
+The user submits a cluster-level object that contains settings such as:
+
+- shard count
+- replica count
+- image
+- scheduling rules
+- TLS or ACL configuration
+
+### 3. The API Server Validates and Stores the Cluster Object
+
+The API server:
+
+- validates the object against the CRD schema
+- stores the object in etcd if valid
+
+At this point, desired state exists in the Kubernetes control plane.
+
+### 4. The Operator Watches the Cluster Object
+
+The operator is watching the API server for `ValkeyCluster` changes.
+
+Once the new object appears, reconcile starts.
+
+### 5. The Operator Creates Cluster-Level Resources
+
+The first resources are cluster-scoped supporting objects, such as:
+
+- headless Service
+- `ConfigMap`
+- internal auth or ACL resources
+
+These are again validated by the API server and persisted in etcd.
+
+### 6. The Operator Calculates Desired Topology
+
+The operator calculates how many Valkey members are needed:
+
+`total members = shards × (1 + replicas)`
+
+For example:
+
+- `3 shards`
+- `1 replica per shard`
+- total = `6` Valkey members
+
+### 7. The Operator Creates Internal `ValkeyNode` Objects
+
+For each required member, the operator creates one `ValkeyNode`.
+
+These are not Kubernetes worker nodes. They are internal records for the individual Valkey members the cluster should contain.
+
+### 8. The API Server Stores Those `ValkeyNode` Objects
+
+Now the topology is represented in more detail:
+
+- cluster-level intent in `ValkeyCluster`
+- per-member intent in `ValkeyNode`
+
+### 9. The `ValkeyNode` Controller Creates Real Workloads
+
+The `ValkeyNode` controller reads the internal node objects and creates the real runnable workload for each one:
+
+- `StatefulSet`
+- or `Deployment`, depending on the selected workload type
+
+In the common path:
+
+- `1 ValkeyNode = 1 workload = 1 pod`
+
+### 10. The Scheduler and Kubelet Bring Up the Pods
+
+From here the standard Kubernetes flow takes over:
+
+1. pod objects are created
+2. the scheduler picks nodes
+3. kubelet pulls images, mounts ConfigMaps and Secrets, and starts containers
+4. pod status is updated through the API server and stored in etcd
+
+### 11. The Operator Observes Readiness and Pod IPs
+
+Once the pods exist, the operator looks at the runtime information:
+
+- which nodes are ready
+- what pod IP each member has
+- whether the expected workloads actually came up
+
+### 12. The Operator Reads Live Valkey State
+
+This is one of the most important parts of the official flow.
+
+At this stage, the operator does **not** rely only on etcd or Kubernetes object status. It also reads the live Valkey cluster over the network using commands such as:
+
+- `CLUSTER INFO`
+- `CLUSTER NODES`
+
+That is how it learns the actual runtime topology.
+
+### 13. The Operator Forms the Cluster
+
+If nodes are still isolated, the operator introduces them with:
+
+- `CLUSTER MEET`
+
+Then it performs the logical topology setup:
+
+- assign slots to primaries
+- attach replicas to primaries
+
+### 14. The Operator Verifies Health
+
+It then checks:
+
+- expected shard count
+- expected replica count
+- slot coverage across all `16384` slots
+- readiness of the formed cluster
+
+### 15. The Operator Updates Cluster Status
+
+When those checks pass, the operator updates `ValkeyCluster.status` and marks the cluster ready.
+
+That status update goes back through the API server and is stored in etcd.
+
+### 16. The Loop Never Really Stops
+
+This same reconcile structure keeps running for:
+
+- scale-out
+- scale-in
+- rolling updates
+- pod restart recovery
+- topology drift
+- degraded-state handling
+
+## Why This Architecture Matters
+
+The official operator is important because it separates:
+
+- cluster-level desired state
+- internal node-level desired state
+- workload reconciliation
+- live cluster observation
+
+That separation is what made it possible for us to think about changes such as persistence and shard-aware placement in a more architecture-friendly way.

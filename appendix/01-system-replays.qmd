@@ -1,0 +1,162 @@
+---
+title: "Appendix: System Replays"
+---
+
+This appendix keeps the most important flows in a tighter technical form. The order of events is intentionally direct here.
+
+## Operator Reconcile Loop
+
+1. The operator reads the custom resource and related child resources.
+2. The API server returns the current spec, status, and object state.
+3. Watch events notify the operator when something changes.
+4. The operator compares desired state with actual state.
+5. If a mismatch exists, the operator reconciles by creating, updating, or deleting resources.
+6. The operator updates status through the API server.
+7. The API server persists the new state in etcd.
+
+## Basic Operator Creation Flow
+
+1. Create a local cluster such as `kind create cluster --name valkey-operator-doc`.
+2. Run `kubebuilder init`.
+3. Run `kubebuilder create api`.
+4. Edit `api/v1alpha1/valkey_types.go`.
+5. Edit `internal/controller/valkey_controller.go`.
+6. Run `make manifests generate fmt`.
+7. Run `go build ./...` and `make test`.
+8. Install the CRD with `make install`.
+9. Run the manager.
+10. Apply the sample custom resource with `kubectl apply -f config/samples/cache_v1alpha1_valkey.yaml`.
+11. Verify that the controller creates the child `Service` and `Deployment`.
+12. Verify that the custom resource reaches `status.phase=Ready`.
+
+## Scratch-Built Operator Flow
+
+1. Apply the `ValkeyCluster` custom resource.
+2. The API server validates the request.
+3. The object is stored in etcd.
+4. The controller receives the new desired state through the API server watch.
+5. The controller creates the `ConfigMap`.
+6. The controller creates the headless Services.
+7. The controller creates the client-facing Service.
+8. The controller creates the `StatefulSet` objects.
+9. If shard anti-affinity is enabled, the controller adds the annotation to the pod template.
+10. The API server validates and stores those child resources.
+11. The `StatefulSet` controller creates Pod objects.
+12. The API server admission chain handles each pod create request.
+13. If the annotation is present, the mutating webhook injects the shard anti-affinity rules.
+14. The scheduler assigns the pod to a node.
+15. The kubelet starts the pod.
+16. Operator-managed bootstrap logic introduces nodes to each other.
+17. Primaries receive slots.
+18. Replicas are attached to their intended primary.
+19. Cluster status is checked and the cluster is marked ready.
+
+## Official Operator Runtime
+
+1. The CRDs are already installed in the cluster.
+2. The user applies `ValkeyCluster`.
+3. The API server validates the object.
+4. The object is stored in etcd.
+5. The operator receives the watch event and starts reconcile.
+6. The operator creates cluster-level resources such as Services, ConfigMaps, and auth-related objects.
+7. Those resources are validated and stored in etcd.
+8. The operator calculates desired topology from shards and replicas.
+9. The operator creates one internal `ValkeyNode` object per required member.
+10. The API server stores those `ValkeyNode` objects.
+11. The `ValkeyNode` controller creates the actual workloads from those internal objects.
+12. The API server stores the workload objects.
+13. The workload controllers create Pods.
+14. The scheduler assigns nodes.
+15. The kubelet starts containers and updates pod status.
+16. The operator observes readiness and pod IPs.
+17. The operator reads live Valkey state through network calls such as `CLUSTER INFO` and `CLUSTER NODES`.
+18. If isolated nodes exist, the operator introduces them with `CLUSTER MEET`.
+19. The operator assigns slots to primaries.
+20. The operator attaches replicas to primaries.
+21. The operator verifies shard count, replica count, and slot coverage.
+22. The operator updates `ValkeyCluster.status`.
+23. The API server stores the updated status in etcd.
+24. The same reconcile pattern continues for scale, restart recovery, and topology drift.
+
+## Official Operator Persistence Direction
+
+1. Persistence is declared on `ValkeyCluster`.
+2. The `ValkeyCluster` controller copies that persistence block into each `ValkeyNode`.
+3. The `ValkeyNode` controller reconciles a named PVC for the node.
+4. The PVC becomes a first-class child resource instead of hiding inside `volumeClaimTemplates`.
+5. The pod mounts that PVC.
+6. The node stores persistent data and `nodes.conf` there.
+7. Status conditions report whether the PVC is ready and whether the requested size is satisfied.
+8. Reclaim policy and finalizers control retain-vs-delete behavior on node deletion.
+
+## Official Operator Placement Direction
+
+1. Placement intent is declared on `ValkeyCluster`.
+2. The controller propagates that intent to each `ValkeyNode`.
+3. The `ValkeyNode` resource builder augments topology spread constraints with shard-aware labels.
+4. The workload pod template contains the final scheduling rules.
+5. The scheduler places nodes using those native Kubernetes constraints.
+
+## Client Routing Flow
+
+1. The client connects to a startup node or API layer.
+2. The startup node returns the current slot map.
+3. The client caches the slot-to-node mapping.
+4. The client sends the command to the primary that owns the target slot.
+5. If topology changed, the client receives redirect information.
+6. The client refreshes the slot map and retries against the new owner.
+
+## Headless Service Identity Flow
+
+1. The StatefulSet creates a pod such as `valkey-0`.
+2. The headless Service publishes a DNS record for that exact pod.
+3. Peers and the operator use that DNS name to address the specific member.
+4. If the pod restarts, the IP may change but the DNS identity pattern remains stable.
+
+## New Pod Join
+
+1. A pod starts and opens the client and cluster-bus ports.
+2. Valkey checks for `nodes.conf`.
+3. No prior cluster memory is found.
+4. An operator or script triggers the introduction flow.
+5. An existing node performs `CLUSTER MEET`.
+6. Topology information spreads across the cluster bus.
+7. The new member is assigned its role.
+
+## Restart With PVC
+
+1. A pod restarts and the same PVC is attached again.
+2. Valkey reads `nodes.conf` and local cluster data.
+3. The previous node ID is recovered.
+4. The pod reconnects to known peers.
+5. If the pod IP changed, peers update the current address for that node ID.
+6. Replication catches up if needed.
+7. The member resumes as the same logical node.
+
+## Restart Without PVC
+
+1. A pod restarts without the files that preserve identity.
+2. `nodes.conf` is missing.
+3. A new node ID is generated.
+4. The pod has no local knowledge of the old cluster.
+5. Automatic rejoin does not happen.
+6. An operator or script must reintroduce the node.
+7. Role assignment and topology sync happen again.
+
+## Leader Failure and Failover
+
+1. A client sends traffic to the current slot owner.
+2. The leader becomes unavailable.
+3. Gossip spreads failure information across the cluster bus.
+4. A replica is promoted according to cluster state.
+5. Slot ownership changes to the new primary.
+6. Clients refresh routing and start sending traffic to the promoted node.
+
+## Secret Delivery
+
+1. A Secret is created or updated through the Kubernetes API.
+2. The API server validates and stores it in etcd.
+3. The kubelet for the assigned node requests the Secret.
+4. The Secret is delivered to the node.
+5. The pod receives it as files or environment variables.
+6. The application uses it for passwords, ACLs, or TLS material.

@@ -1,0 +1,106 @@
+---
+title: "Operators"
+---
+
+
+Now we discuss what an operator really does, how a basic operator is created, and where Helm charts fit in this picture.
+
+Kubernetes already knows how to keep resources present, restart failed containers, and converge generic object state. What it does not know by itself is how a clustered data system should form, heal, scale, and report readiness. An operator fills that gap by continuously observing real state and reconciling it against the desired one.
+
+## What the Reconcile Loop Actually Looks Like
+
+```{mermaid}
+flowchart TD
+  A["Operator asks API server for CR, status, and child resource state"] --> B["API server serves the current object view"]
+  B --> C["Watch event reaches the operator when something changes"]
+  C --> D["Operator compares desired state with actual state"]
+  D --> E{"Mismatch found?"}
+  E -- no --> A
+  E -- yes --> F["Operator creates, updates, or deletes resources"]
+  F --> G["Operator updates CR status through the API server"]
+  G --> H["API server stores the new state in etcd"]
+  H --> A
+```
+
+In practice, the operator spends most of its life in this loop:
+
+1. read desired state from the custom resource
+2. inspect current state from Kubernetes and sometimes from the application itself
+3. detect mismatch
+4. reconcile by creating, updating, or cleaning resources
+5. update status so users can see what happened
+
+The important technical point is that the controller watches through the Kubernetes API server. etcd is the backing store, but the controller does not talk to etcd directly.
+
+## Where Helm Charts Fit
+
+Helm charts are not the same thing as operators, but they are still important in Kubernetes application delivery.
+
+Helm is very good at:
+
+- packaging Kubernetes manifests
+- templating values for different environments
+- installing and upgrading releases
+- managing standard objects such as Deployments, StatefulSets, Services, and ConfigMaps
+
+For many applications, a Helm chart is enough. For clustered stateful systems, Helm alone usually stops short when runtime decision-making is needed.
+
+| Topic | Helm chart | Operator |
+|---|---|---|
+| main job | package and install manifests | continuously manage application-specific lifecycle |
+| model | render templates and apply them | watch events and reconcile continuously |
+| runtime awareness | limited | strong |
+| application-specific healing | usually manual or external | built into controller logic |
+| best fit | standard app delivery | stateful systems with cluster behavior |
+
+An operator can also be packaged and installed with Helm. The difference is that Helm delivers resources, while the operator keeps working after installation.
+
+## Ways to Create an Operator
+
+There is no single mandatory toolchain. The path depends on how much custom lifecycle logic the workload needs.
+
+| Approach | Best when | Tradeoff |
+|---|---|---|
+| `Kubebuilder` | you want native controller patterns, CRDs, and webhooks | more code, more control |
+| `Operator SDK` | you want a controller-based operator with packaging support | similar complexity to Kubebuilder, but a more operator-centered project layout |
+| `Helm` or `Ansible` operators | the lifecycle is closer to templating and orchestration than deep reconciliation | simpler to begin, but can get tight once runtime logic becomes complex |
+| direct controller code | you want full control over every interaction point | maximum flexibility and maximum ownership burden |
+
+## Which Language Makes Sense
+
+For Kubernetes operators, Go is the strongest default.
+
+The reason is practical rather than ideological:
+
+- the Kubernetes ecosystem is Go-first
+- `client-go` and `controller-runtime` are strongest there
+- most advanced examples, webhooks, and controller patterns are easier to find in Go
+
+Other languages are still possible, but for controller-heavy work with custom reconciliation and admission hooks, Go usually gives the cleanest path.
+
+## Basic Operator Creation Flow
+
+At a practical level, a simple Go operator usually starts like this:
+
+```{mermaid}
+flowchart TD
+  A["kubebuilder init"] --> B["kubebuilder create api"]
+  B --> C["Edit api/v1alpha1/valkey_types.go"]
+  C --> D["Edit internal/controller/valkey_controller.go"]
+  D --> E["make manifests generate fmt"]
+  E --> F["make install"]
+  F --> G["Run the manager"]
+  G --> H["kubectl apply sample CR"]
+  H --> I["Controller creates child resources and updates status"]
+```
+
+The important implementation stages are:
+
+1. define the custom resource shape
+2. create the CRD and API types
+3. write the controller and its reconcile method
+4. set up RBAC, manager wiring, and deployment
+5. add webhooks when validation or mutation is needed
+6. deploy the operator and test it with a real custom resource
+
+The next chapter follows this exact path with the real files and commands.

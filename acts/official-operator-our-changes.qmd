@@ -1,0 +1,207 @@
+---
+title: "Official Operator: Our Changes and Design Direction"
+---
+
+Once we understood the official operator runtime, the next question was not "can it run at all?" It clearly can.
+
+The question became:
+
+What is still missing for our production use case, and how should those pieces be added without breaking the architecture that is already there?
+
+Two tracks mattered most:
+
+- PVC-backed persistence
+- shard-aware placement
+
+## Change Track 1: PVC-Backed Persistence
+
+The persistence discussion changed over time. That is important, because the final direction only makes sense after seeing what the earlier approach could and could not do.
+
+### First Attempt: StatefulSet `volumeClaimTemplates`
+
+The earliest persistence experiment attached storage through the StatefulSet path.
+
+That meant:
+
+- persistence was tied directly to the StatefulSet workload
+- the pod mounted storage coming from `volumeClaimTemplates`
+- the design was naturally centered around the StatefulSet resource itself
+
+This was a reasonable first step because it is a common Kubernetes pattern for stateful workloads.
+
+### Why We Did Not Stop There
+
+We did not continue with the pure `volumeClaimTemplates` path for several reasons.
+
+#### 1. It was too tightly coupled to one workload path
+
+The official operator architecture is centered around `ValkeyNode`.
+
+That means the real owner of "this Valkey member needs persistence" is not the raw StatefulSet template. It is the `ValkeyNode` object that represents that member.
+
+#### 2. It made persistence feel like a workload detail instead of a node-level contract
+
+What we actually wanted was:
+
+- cluster spec declares persistence
+- that spec is propagated to each `ValkeyNode`
+- each node manages its own PVC lifecycle
+
+That matches the official architecture much better than hiding persistence only inside a workload template.
+
+#### 3. `volumeClaimTemplates` are awkward when the storage story has to evolve
+
+Our design requirements were not just "attach a volume once."
+
+We also cared about:
+
+- explicit reclaim behavior
+- clearer status when PVCs are pending
+- resize-aware behavior
+- node-level visibility
+
+That becomes harder when the storage logic is buried inside `volumeClaimTemplates`, especially when the official operator already has a per-node abstraction and when StatefulSet storage changes need careful handling.
+
+#### 4. We wanted the PVC lifecycle to be explicit and testable
+
+At the node level, we could reason much more clearly about:
+
+- when the PVC is created
+- when it is ready
+- when it is resized
+- whether it should be retained or deleted
+
+That is a much cleaner operational story.
+
+## The Direction We Moved To: `ValkeyNode`-Managed PVCs
+
+The design we moved toward was:
+
+1. add `persistence` to `ValkeyCluster`
+2. propagate that `persistence` block to each `ValkeyNode`
+3. let the `ValkeyNode` controller create and manage a named PVC directly
+4. mount that PVC into the workload created for the node
+5. surface PVC readiness and resize state through `ValkeyNode.status`
+
+## Persistence Flow With the New Design
+
+```{mermaid}
+flowchart TD
+  A["User sets persistence in ValkeyCluster"] --> B["ValkeyCluster controller propagates persistence to each ValkeyNode"]
+  B --> C["ValkeyNode controller reconciles PVC for that node"]
+  C --> D["PVC created as a first-class child resource"]
+  D --> E["Workload mounts named PVC"]
+  E --> F["Valkey stores data and nodes.conf on persistent storage"]
+  F --> G["ValkeyNode status reports PVC readiness and size state"]
+```
+
+## What the Implementation Added
+
+The persistence work added several concrete pieces:
+
+- a `PersistenceSpec`
+- propagation from `ValkeyCluster` to `ValkeyNode`
+- direct PVC creation in the `ValkeyNode` controller
+- status conditions for:
+  - PVC ready
+  - PVC size ready
+  - resize in progress
+  - resize infeasible
+- reclaim policy support:
+  - `Retain`
+  - `Delete`
+- finalizer-driven cleanup when delete behavior is requested
+
+## Guardrails We Added
+
+The design was not "allow anything."
+
+We also added guardrails so the operator behaves predictably:
+
+- persistence requires `StatefulSet`
+- persistence cannot be removed after creation
+- persistence cannot be added later to an existing node
+- storage class is immutable
+- size can only grow, not shrink
+
+These rules came from operational reality, not from theory.
+
+## Why This Matches the Official Architecture Better
+
+This approach fits the official operator because:
+
+- `ValkeyCluster` stays the cluster-level intent
+- `ValkeyNode` remains the owner of per-member state
+- the `ValkeyNode` controller remains the place that creates concrete child resources
+- PVC lifecycle becomes visible and controllable at the same level as workload lifecycle
+- the design can clearly reject unsupported persistence combinations such as `Deployment` plus durable node storage
+
+That is why this direction felt stronger than staying with raw StatefulSet claim templates.
+
+## Change Track 2: Shard-Aware Placement
+
+The second important track was placement of `Master` and its `Replica`.
+
+The problem is not generic anti-affinity alone. The real problem is this:
+
+- a primary and its replica should not quietly land in the same failure domain
+- the placement policy should understand shard relationships, not just pod labels in general
+
+## What We Learned From the Scratch Operator
+
+In the scratch-built operator, we explored shard safety through:
+
+- an annotation on the pod template
+- a mutating webhook
+- final anti-affinity injection during pod admission
+
+That worked well for that architecture because we owned the admission path and the pairing model.
+
+## Why the Official Operator Needed a Different Shape
+
+For the official operator, a webhook-first model was less attractive because:
+
+- the operator already has a strong `ValkeyNode` abstraction
+- pod specs are already built in the `ValkeyNode` controller
+- native Kubernetes scheduling fields fit more naturally into that path
+
+So instead of copying the webhook model directly, we explored a more native approach.
+
+## The Direction We Explored: Topology Spread Constraints
+
+The design direction here was:
+
+1. expose topology spread configuration at cluster level
+2. propagate it to each `ValkeyNode`
+3. augment the selector with shard-aware labels in the resource builder
+4. let the scheduler enforce spread across the topology domain
+
+That made the control path cleaner:
+
+- the cluster spec declares the placement intent
+- the `ValkeyNode` spec carries the per-node version of that intent
+- the pod template is built with the final topology spread constraints
+- the scheduler sees a normal native Kubernetes scheduling spec
+
+## Placement Flow With the Official Operator Direction
+
+```{mermaid}
+flowchart TD
+  A["User sets placement policy on ValkeyCluster"] --> B["ValkeyCluster controller copies policy to ValkeyNode"]
+  B --> C["ValkeyNode resource builder augments topology selectors with cluster and shard labels"]
+  C --> D["Workload pod template contains final topologySpreadConstraints"]
+  D --> E["Scheduler spreads primary and replica pods across topology domains"]
+```
+
+## What Is Still Open
+
+The placement design discussion is still evolving, and that should be stated clearly.
+
+What we already have is:
+
+- a much better understanding of the right insertion point
+- code showing how shard-aware topology spread can be generated
+- a cleaner upstream-friendly direction than a custom webhook dependency
+
+What still needs final agreement is the exact external API and how strict the placement guarantees should be under capacity pressure.
+

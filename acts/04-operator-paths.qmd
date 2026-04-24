@@ -1,0 +1,87 @@
+---
+title: "The Workstreams We Actually Explored"
+---
+
+This section is not theory. These were the real implementation and study tracks we used to understand the problem from different angles.
+
+## Why We Needed Multiple Tracks
+
+If we had looked at only one operator, we would have missed too much:
+
+- the no-operator path teaches raw mechanics
+- OpsTree shows what a working production-style operator feels like
+- our scratch-built operator shows how the control flow changes when we own the CRD, controller, annotations, and webhook
+- the official operator shows what an upstream architecture looks like when it already has `ValkeyCluster` and internal `ValkeyNode` objects
+
+That is why this booklet treats them as workstreams, not as random options in a table.
+
+## Workstream 1: No-Operator
+
+This path kept the mechanics exposed:
+
+- manual cluster formation
+- direct Kubernetes objects
+- shell-driven operational steps
+- minimal abstraction hiding what happens
+
+This was useful because it forced us to learn:
+
+- what resources really have to exist
+- how pods come up
+- what the cluster needs before it can form
+- where day-two work becomes painful without controller logic
+
+## Workstream 2: OpsTree
+
+OpsTree gave us a working operator-shaped reference:
+
+- cluster CRD
+- controller-managed resources
+- StatefulSets
+- PVC-backed workloads
+- a more realistic operational lifecycle
+
+This helped us move from raw mechanics to a more practical operator model.
+
+## Workstream 3: Our Scratch-Built Operator
+
+This track mattered because we moved from studying operators to building one ourselves.
+
+The important parts were:
+
+- our own `ValkeyCluster` CRD
+- our own controller logic
+- generated `ConfigMap`, `Service`, `StatefulSet`, and job resources
+- annotation-based signaling for shard anti-affinity
+- a mutating webhook that patches the final pod spec before scheduling
+
+This is where the design became concrete, because we had to decide exactly where each policy belonged.
+
+## Workstream 4: Official Valkey Operator Plus Our Changes
+
+The official operator already had a strong base:
+
+- `ValkeyCluster`
+- internal `ValkeyNode`
+- cluster bootstrap logic
+- rolling updates
+- degraded-state recovery
+- TLS and ACL support
+- support for both `StatefulSet` and `Deployment`
+
+Our work here was not to throw that away. It was to identify the missing production-facing pieces and shape them in a way that fits the existing architecture.
+
+## Side-by-Side Comparison
+
+{{< include ../_partials/_comparison-table.qmd >}}
+
+## What These Workstreams Taught Us
+
+Together, the four paths gave us a complete picture:
+
+- no-operator taught us the raw mechanics
+- OpsTree showed what a mature operator workflow feels like
+- the scratch-built path showed where to place our own control hooks
+- the official path showed where upstream can be extended instead of replaced
+
+The next three chapters go into the technical details of those implementation tracks.

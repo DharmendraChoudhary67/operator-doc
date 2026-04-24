@@ -1,0 +1,46 @@
+---
+title: "When the Crown Falls"
+---
+
+We start with leader failure because it is the fastest way to see the whole system at once.
+
+Traffic is still flowing. The client still wants answers. Somewhere inside the cluster, replicas are listening, gossip is moving, and the system has to decide whether this is a brief interruption, a real failure, or the beginning of a failover story.
+
+This single scene exposes the roles of Kubernetes, operators, storage, networking, and secrets.
+
+```{mermaid}
+sequenceDiagram
+  participant C as Client
+  participant L as Leader
+  participant G as Cluster Gossip
+  participant F as Follower
+
+  C->>L: Request lands on slot owner
+  L--xC: Leader disappears
+  G->>F: Failure signal spreads
+  F->>F: Promotion begins
+  G->>C: Slot view changes
+  C->>F: Client retries with new route
+```
+
+The rest of the booklet keeps returning to three questions:
+
+- Who notices failure first?
+- How does the client find the right node again?
+- What makes a restarted pod count as the same member instead of a brand new one?
+
+## The Main Components
+
+{{< include ../_partials/_cast-table.qmd >}}
+
+## Why This Is More Than "Run a StatefulSet"
+
+Valkey on Kubernetes is not only about keeping containers alive. It is about preserving the things that make a cluster recognizable to itself:
+
+- slot ownership
+- replica relationships
+- node identity
+- stable networking references
+- trusted credentials
+
+Kubernetes can restart pods and recreate resources, but it does not naturally understand shard ownership, cluster join order, or what it means for a node to return with memory. That is the gap where operators become useful.

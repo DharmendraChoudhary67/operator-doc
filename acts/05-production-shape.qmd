@@ -1,0 +1,68 @@
+---
+title: "The Shape of Production"
+---
+
+Now we bring the earlier chapters together and look at the production recommendation.
+
+## Why Production Changes the Choice
+
+In a real platform, the requirements are broader than "the cluster came up once."
+
+Production asks for:
+
+- repeatable scaling
+- safer upgrades
+- visibility into status and degraded conditions
+- consistent placement policy
+- storage that survives rescheduling
+- a cleaner interface for GitOps-style operations
+
+That naturally pushes the recommendation toward an operator-centered model.
+
+## The Platform Around the Cluster
+
+```{mermaid}
+flowchart TD
+  A["GitOps or Automation"] --> B["CAPI-managed Kubernetes cluster"]
+  B --> C["Operator"]
+  C --> D["Valkey cluster resources"]
+  D --> E["Pods across worker nodes and failure domains"]
+  E --> F["CSI-backed persistent volumes"]
+  A --> G["Load balancer entry path"]
+  G --> H["API or client traffic"]
+```
+
+This is where infrastructure details start to matter: CAPI, portable CSI storage, load balancers, and placement across failure domains all influence whether the cluster remains resilient when the environment itself changes.
+
+## What Must Be True for the Design to Hold
+
+At a minimum, the design should preserve:
+
+- stable cluster membership after restart when storage is retained
+- shard-aware placement for primaries and replicas
+- enough worker capacity to avoid collapsing multiple fault domains onto one node
+- a clear status surface when scheduling, storage, or bootstrap steps fail
+
+## The Production Verdict
+
+The strongest direction is:
+
+- use the no-operator path as a learning and debugging lens
+- keep the scratch-built operator as proof of design understanding and as a place to test control ideas
+- prefer an operator-first production model
+- push the official or otherwise mature operator path toward the PVC and shard-affinity behavior the system really needs
+
+In other words, the long-term win is not "start from zero forever." It is to carry our understanding into a durable operator path that respects how Valkey actually behaves.
+
+## Summary
+
+The cluster survives not because one component is clever, but because several layers agree on the same identity story:
+
+- Kubernetes keeps resources moving
+- the operator keeps intent and sequencing aligned
+- Valkey keeps cluster truth through gossip and slot ownership
+- networking keeps the right nodes reachable
+- secrets keep trust intact
+- persistent storage keeps memory attached to the returning member
+
+That shared agreement is what makes recovery feel reliable instead of accidental.

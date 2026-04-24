@@ -1,0 +1,42 @@
+project:
+  type: book
+
+book:
+  title: "Kubernetes Operators and the Valkey Cluster"
+  subtitle: "A practical guide to operators, cluster behavior, and recovery on Kubernetes"
+  # author: "Dharmendra C."
+  # date: "2026-04-23"
+  page-navigation: true
+  repo-url: https://github.com/DharmendraChoudhary67/operator-doc
+  # repo-actions: [issue]
+  # repo-branch: main
+  chapters:
+    - index.qmd
+    - acts/01-the-problem.qmd
+    - acts/02-building-an-operator.qmd
+    - acts/basic-operator-in-practice.qmd
+    - acts/04-operator-paths.qmd
+    - acts/scratch-and-opstree-flow.qmd
+    - acts/official-operator-runtime.qmd
+    - acts/official-operator-our-changes.qmd
+    - acts/03-how-the-cluster-lives.qmd
+    # - acts/05-production-shape.qmd
+    - appendix/01-system-replays.qmd
+    - appendix/02-code-and-design-references.qmd
+
+format:
+  html:
+    toc: false
+    smooth-scroll: true
+    code-copy: true
+    number-sections: false
+    theme:
+      light: cosmo
+    css: styles.css
+    include-in-header: hyp.html
+    include-after-body: keyboard-nav.html
+
+execute:
+  enabled: false
+
+lang: en

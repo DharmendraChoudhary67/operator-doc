@@ -1,0 +1,36 @@
+---
+title: "Overview"
+---
+
+Cluster looks calm from a distance.
+
+Requests arrive, pods answer, replicas follow, and the control plane keeps the skyline steady. But the peace is slightly deceptive. This city is held together by memory, routing, trust, and timing. The moment one leader disappears, every hidden system starts speaking at once.
+
+This booklet uses this moment as the entry point, then teaches the system layer by layer.
+
+That means we will cover:
+
+- what Kubernetes manages on its own
+- what an operator adds on top
+- how Valkey uses gossip, slots, and peer identity
+- how clients keep finding the right node
+- how storage, DNS, and secrets shape recovery
+- how different operator choices change the fate of the cluster on day two
+
+## What This Booklet Covers
+
+- Kubernetes operators 101
+- basic operator creation flow
+- a hands-on basic operator walkthrough with commands and code
+- ways to build an operator and the tradeoffs behind each path
+- Helm charts and how they differ from operators
+- Valkey cluster behavior, including gossip and slot ownership
+- networking, headless services, and cluster-aware clients
+- secrets, storage, and node identity
+- the four paths we explored:
+  - no-operator
+  - OpsTree
+  - our scratch-built operator
+  - the official operator with our PVC and shard-affinity design direction
+
+

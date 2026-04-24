@@ -1,0 +1,166 @@
+---
+title: "Scratch-Built Operator and OpsTree-Style Flow"
+---
+
+This chapter describes the work pattern we followed in our own operator and the control shape we learned from the OpsTree-style approach.
+
+OpsTree gave us a practical reference for the overall backbone:
+
+- cluster custom resource
+- controller-managed Kubernetes resources
+- stateful workloads
+- operator-driven cluster formation and lifecycle
+
+Our scratch-built operator followed that same backbone and added our own annotation and mutating-webhook path for shard-aware anti-affinity.
+
+The key idea is simple:
+
+1. the user applies one cluster-level custom resource
+2. the controller translates that into Kubernetes resources
+3. the Kubernetes control plane turns those resources into running pods
+4. operator-managed bootstrap logic turns running pods into a real Valkey cluster
+
+## High-Level Control Flow
+
+```{mermaid}
+flowchart TD
+  A["User applies ValkeyCluster CR"] --> B["API server validates request"]
+  B --> C["ValkeyCluster stored in etcd"]
+  C --> D["Controller receives watch event from API server"]
+  D --> E["Create ConfigMap, headless Services, client Service, StatefulSets"]
+  E --> F{"shardReplicaAntiAffinity = true?"}
+  F -- yes --> G["Add anti-affinity annotation to pod template"]
+  F -- no --> H["Keep pod template unchanged"]
+  G --> I["API server validates and stores child resources"]
+  H --> I
+  I --> J["StatefulSet controller creates Pod objects"]
+  J --> K["API server admission handles Pod create"]
+  K --> L{"Annotation present?"}
+  L -- yes --> M["Mutating webhook patches shard anti-affinity"]
+  L -- no --> N["Pod spec remains unchanged"]
+  M --> O["Scheduler assigns node according to anti-affinity and other rules"]
+  N --> O
+  O --> P["Kubelet starts pod on assigned node"]
+  P --> U["CNI plugin assigns IP and routing"]
+  U --> Q["Operator-managed bootstrap introduces nodes"]
+  Q --> R["Assign slots to primaries"]
+  R --> S["Attach replicas to chosen primaries"]
+  S --> T["Operator updates cluster status to Ready"]
+```
+
+## Step-by-Step Runtime Flow
+
+The control flow above becomes easier to follow if we break it into exact stages.
+
+### 1. The Cluster CR Is Applied
+
+- the user applies `ValkeyCluster`
+- the API server validates the object against the CRD schema
+- once valid, the object is persisted in etcd
+
+From the controller point of view, it is watching the API server. The API server is backed by etcd, so this is how the controller learns about the new desired state.
+
+### 2. The Controller Creates the Base Resources
+
+After the watch event arrives, the controller creates the resources required for the cluster to exist:
+
+- `ConfigMap`
+- headless Services for stable pod identity
+- client-facing Service
+- `StatefulSet` objects
+- supporting resources such as PDBs or bootstrap jobs, depending on the operator design
+
+In our scratch-built operator, the `StatefulSet` pod template is also the place where we attach the signal for shard-aware scheduling.
+
+### 3. The Annotation Signals the Webhook
+
+If `shardReplicaAntiAffinity: true` is set on the cluster:
+
+- the controller adds an annotation to the pod template
+- the `StatefulSet` later creates Pod objects from that template
+- when the pod create request reaches admission, the webhook sees the annotation
+- the webhook injects the final anti-affinity rules into the pod spec
+
+This was an important design choice:
+
+- the controller decides **which** pods need special treatment
+- the webhook decides **how** the pod spec should be mutated before scheduling
+
+## Why We Used Annotation Plus Webhook Here
+
+In this operator design, the annotation-plus-webhook path gave us a clean separation:
+
+- the controller kept the cluster-level decision logic
+- the webhook handled the last-mile mutation at pod creation time
+- the scheduler still received a normal Kubernetes pod spec with anti-affinity applied
+
+That made the scheduling path explicit without hardcoding every anti-affinity rule into a single static manifest.
+
+## What the Webhook Actually Does
+
+The webhook is not mutating all pods in the namespace. That would be dangerous.
+
+The logic is intentionally narrow:
+
+- it only runs for pod create requests
+- it only targets pods with the cluster label
+- it only patches pods carrying the shard anti-affinity annotation
+
+Then it injects anti-affinity so a pod is kept away from its paired leader or follower on the same Kubernetes node.
+
+## After Scheduling, the Cluster Still Is Not Formed
+
+Even once the pods are running, the Valkey cluster does not exist yet in the logical sense.
+
+At this stage, the operator-managed bootstrap flow still has to:
+
+- identify which pods are ready
+- introduce them to each other with `CLUSTER MEET`
+- assign slots to the primary nodes
+- attach replicas to the intended primaries
+- wait for the replication relationship to settle
+
+Only after that can the cluster be considered truly ready.
+
+## Bootstrap and Topology Formation
+
+This is the part that turns Kubernetes resources into a real Valkey cluster:
+
+1. all required pods come up
+2. bootstrap logic discovers their addresses
+3. isolated nodes are introduced into one cluster
+4. primaries receive slot ownership
+5. replicas are attached to their matching primary
+6. the controller checks the resulting topology and status
+7. status is updated to `Ready`
+
+## What We Learned From This Flow
+
+This workstream gave us several concrete lessons:
+
+- watching through the API server is one thing; forming the live Valkey cluster is another
+- a running pod is not the same as a joined cluster member
+- admission webhooks must be scoped very tightly or they can block the operator itself
+- shard anti-affinity only works if replica pairing is deterministic enough to match the scheduling policy
+- `nodes.conf`, PVCs, and runtime cluster commands all matter after the pod is already running
+
+That is why this workstream was more than a controller exercise. It was where resource reconciliation, admission mutation, scheduling, and live Valkey topology all met in one place.
+
+## Runtime Issues We Actually Hit While Building It
+
+The learnings from this operator were not abstract. They came from failures on a real cluster.
+
+| Issue | What happened | What we changed |
+|---|---|---|
+| leader election RBAC | the manager could not become leader without `leases` permissions | added `coordination.k8s.io/leases` RBAC from day one |
+| webhook self-dependency | the mutating webhook tried to intercept the operator's own pod creation | scoped the webhook to only mutate cluster pods with the right label |
+| webhook trust | a bad `caBundle` or serving certificate blocked pod creation | generated the CA and serving certs together and kept one source of truth |
+| PVC defaulting | `storageClassName: ""` prevented the default storage class from being used | left the field unset when the user did not specify it |
+| PVC binding vs anti-affinity | early node-local PVC binding conflicted with leader-follower anti-affinity and could reintroduce L-F SPOF risk or pod will goes in pending | used a StorageClass with WaitForFirstConsumer so PVC binding happened after scheduler placement, and kept shard anti-affinity enabled |
+| optimistic reconcile | the controller expected new child resources to be readable immediately | treated early `NotFound` as convergence-in-progress and requeued |
+| deterministic pairing | automatic replica assignment did not always match ordinal assumptions | moved to an explicit bootstrap path where the intended replica relationship is known |
+
+Two lessons mattered especially for shard-aware placement:
+
+- pod-name-based anti-affinity is only safe when bootstrap guarantees the same pairing model
+- seeing a seed node in `CLUSTER NODES` is not enough to prove the full cluster bootstrap finished

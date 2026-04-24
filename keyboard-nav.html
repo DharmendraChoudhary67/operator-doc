@@ -1,0 +1,26 @@
+<script>
+document.addEventListener("keydown", function (event) {
+  const target = event.target;
+  const isTypingContext =
+    target &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT" ||
+      target.isContentEditable);
+
+  if (isTypingContext || event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  const prev = document.querySelector('link[rel="prev"]');
+  const next = document.querySelector('link[rel="next"]');
+
+  if (event.key === "ArrowLeft" && prev) {
+    window.location.href = prev.href;
+  }
+
+  if (event.key === "ArrowRight" && next) {
+    window.location.href = next.href;
+  }
+});
+</script>

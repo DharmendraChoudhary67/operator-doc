@@ -1,0 +1,6 @@
+| Path | Day 1 | Day 2 | Transparency | Production fit | What it taught us |
+|---|---|---|---|---|---|
+| No-operator | simple to start | heavier to maintain | highest | weaker long-term | forced us to understand every moving part |
+| OpsTree | more setup upfront | calmer operations | medium | strong | showed a practical operator-first workflow |
+| Scratch-built operator | highest ownership burden | flexible if maintained well | high | depends on long-term commitment | let us encode webhook and shard-affinity behavior ourselves |
+| Official operator plus our design direction | good upstream base | stronger if gaps are closed | medium | potentially strongest | showed where PVC handling and shard-safe placement need to grow |

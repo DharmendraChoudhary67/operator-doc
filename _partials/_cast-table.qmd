@@ -1,0 +1,10 @@
+| Component | Real system role | Why it matters |
+|---|---|---|
+| `Kubernetes control plane` | API server, controller loops, scheduler, and resource lifecycle management | keeps desired state, scheduling, and resource lifecycles moving |
+| `Operator / controller` | application-specific reconciliation logic | encodes application-specific behavior and recovery logic |
+| `Valkey nodes` | running Valkey members | own slots, replication, and runtime cluster state |
+| `Valkey cluster bus` | node-to-node gossip channel | spreads topology changes and failure signals |
+| `PVC / persistent storage` | persistent volume claims and attached storage | keeps data and cluster memory alive across pod restarts |
+| `nodes.conf` | local node identity file | preserves node ID and peer knowledge |
+| `Client` | application or API client | feels redirects, retries, and outages first |
+| `Secrets path` | Secrets, API server, etcd, kubelet | controls trust material such as passwords, ACLs, and TLS |

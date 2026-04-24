@@ -1,0 +1,206 @@
+---
+title: "The Living Cluster"
+---
+
+Now we discuss how the Valkey cluster works at runtime: how the client reaches the correct node, how headless services help with identity, how gossip spreads cluster knowledge, and what changes when pods restart.
+
+## Valkey Cluster Basics
+
+A Valkey cluster is not just a set of identical pods. Each member has a role and a relationship to the wider topology.
+
+- primaries own hash slots
+- replicas shadow those primaries and are candidates for promotion
+- gossip keeps topology and failure knowledge moving between nodes
+- clients need a current slot map so they can reach the right owner
+
+That is why cluster behavior cannot be reduced to "one service in front of many pods."
+
+## How the Client Connects to the Cluster
+
+In a real cluster, the client does not blindly send every request to one random node. A cluster-aware client learns the slot map and then targets the correct primary.
+
+```{mermaid}
+sequenceDiagram
+  participant C as Client or API Layer
+  participant S as Startup Node
+  participant P as Slot Owner Primary
+
+  C->>S: Initial connection
+  S-->>C: Cluster slot map
+  C->>C: Cache slot-to-node mapping
+  C->>P: Send command to slot owner
+  alt topology changed
+    P-->>C: Redirect or slot update
+    C->>S: Refresh slot map
+    C->>P: Retry to new owner
+  end
+```
+
+The important point is this:
+
+- a service or load balancer can provide the first entry point
+- but correct request routing depends on slot ownership
+- after failover, the client must refresh its view and talk to the new owner
+
+## Normal Service vs Headless Service
+
+For stateful systems, these two service types do different jobs.
+
+| Service type | What it gives you | Why it matters here |
+|---|---|---|
+| normal Service | one stable service identity and generic traffic distribution | useful as an entry point |
+| headless Service | pod-specific DNS records | gives peers and controllers a stable way to address individual members |
+
+The headless service is especially important for StatefulSets because it gives each pod a stable DNS identity even when pod IPs change (Pod restart).
+
+```{mermaid}
+flowchart TD
+  A["StatefulSet creates pod valkey-0"] --> B["Headless Service publishes pod DNS record"]
+  B --> C["valkey-0.service.namespace.svc"]
+  C --> D["Peers, operator, and diagnostics can target exact pod"]
+```
+
+## How Gossip Drives Failover
+
+Valkey uses its cluster bus to exchange health and topology information between nodes. This is the gossip protocol that makes runtime failure handling self-contained.
+
+The important point is that the operator may help with cluster formation, but normal leader failure detection and replica promotion happen inside the Valkey cluster itself.
+
+```{mermaid}
+flowchart TD
+  A["Nodes exchange PINGs over the cluster bus"] --> B["No response within cluster-node-timeout"]
+  B --> C["Node is marked PFAIL in a local view"]
+  C --> D["PFAIL is gossiped across primary nodes"]
+  D --> E{"Majority agrees the node is down?"}
+  E -- no --> A
+  E -- yes --> F["Node is marked FAIL"]
+  F --> G["Eligible replica starts failover and requests authorization"]
+  G --> H{"Majority ACK received?"}
+  H -- no --> D
+  H -- yes --> I["Replica is promoted to the new primary"]
+  I --> J["Cluster stabilizes and clients are redirected"]
+  J --> K["Old primary can later rejoin as a replica"]
+```
+
+In short:
+
+- `Possible Failure (PFAIL)` is a local suspicion
+- `FAIL` is a cluster-level decision
+- promotion needs replica candidacy plus cluster agreement
+- clients see the result through redirects and slot-map refresh, not through the gossip messages directly
+
+## What Happens When a Leader or Follower Falls
+
+### When a Leader Fails
+
+```{mermaid}
+sequenceDiagram
+  participant C as Client
+  participant P as Current Primary
+  participant G as Gossip and Primary Consensus
+  participant R as Replica
+
+  C->>P: Write request for owned slot
+  P--xC: Primary stops responding
+  G->>G: Exchange PING and mark PFAIL
+  G->>G: Majority confirms FAIL
+  R->>G: Start failover and request authorization
+  G-->>R: Promotion acknowledged
+  R->>R: Become new primary
+  C->>R: Refresh slot map or follow redirect
+```
+
+What changes after a leader failure:
+
+- failure is first suspected locally, then confirmed by cluster gossip
+- an eligible replica is promoted to the new primary
+- slot ownership moves to the promoted replica
+- clients must refresh routing or follow redirects before writes fully normalize
+- the old primary can later return, but it usually comes back as a replica
+
+One subtle point from the failover notes is important: failover changes roles, not pod placement. The pods usually stay on the same Kubernetes nodes; what changes is the internal Valkey role attached to each pod.
+
+### When a Follower Fails
+
+```{mermaid}
+sequenceDiagram
+  participant C as Client
+  participant P as Primary
+  participant F as Follower
+  participant G as Gossip
+
+  C->>P: Write request
+  P->>F: Replication stream
+  F--xP: Follower stops responding
+  G->>G: Failure is noticed and shared
+  C->>P: Client continues writing to the same primary
+  P->>P: Cluster runs with reduced redundancy
+```
+
+What changes after a follower failure:
+
+- client write routing usually does not change immediately because the primary still owns the slot
+- replication safety drops because one copy is missing or stale
+- the shard remains functional, but it is less protected until the follower returns or a replacement is attached
+- if the follower comes back with persistent identity, rejoin is smoother; without that identity, recovery becomes more manual
+
+So the networking story is inseparable from topology and failover:
+
+- the client only sees slot owners and redirects
+- the cluster uses gossip to decide whether a node is actually down
+- safe recovery depends on role transitions, storage identity, and physical separation all working together
+
+## A Pod Without Memory
+
+Two situations lead to the same operational outcome:
+
+- a brand new pod joins the cluster for the first time
+- an old pod restarts without its previous cluster state, usually because `nodes.conf` and related files were not preserved
+
+In both cases, the cluster sees an unknown member. The pod starts the Valkey process, opens the client and cluster-bus ports, and waits to be introduced.
+
+```{mermaid}
+sequenceDiagram
+  participant N as New or Restarted Pod
+  participant O as Operator or Script
+  participant E as Existing Node
+  participant G as Cluster Bus
+
+  N->>N: Start Valkey
+  N->>N: Check nodes.conf
+  N->>N: No prior cluster memory
+  O->>E: Trigger introduction
+  E->>N: CLUSTER MEET
+  G->>N: Share topology
+  O->>N: Assign role and attach if replica
+```
+
+The important idea is that "pod running" is not the same as "node joined." Without preserved cluster memory, the pod does not automatically count as the same logical member, even if the container name looks familiar.
+
+## The Return With Memory
+
+When the pod restarts with persistent storage and `nodes.conf` intact, the return path is much smoother.
+
+- the pod may come back on a new IP
+- `nodes.conf` restores the previous node ID
+- peers recognize the same member reconnecting
+- the cluster updates the current address for that identity
+
+```{mermaid}
+sequenceDiagram
+  participant R as Restarted Pod
+  participant P as PVC
+  participant E as Existing Nodes
+  participant G as Cluster Gossip
+
+  R->>P: Read nodes.conf and local data
+  P-->>R: Return existing node identity
+  R->>E: Reconnect to known peers
+  E->>G: Spread new address if needed
+  G->>E: Refresh cluster view
+  R->>R: Resume as same logical member
+```
+
+This is why persistent storage is not just about bytes. It is also about preserving cluster identity.
+
+That difference is one of the central lessons of the whole booklet: a restarted container is not automatically the same cluster member unless the right memory survives with it.

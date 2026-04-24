@@ -1,0 +1,440 @@
+---
+title: "Create a Basic Operator: Commands and Code"
+---
+
+This chapter shows one concrete operator path that can be followed on a real machine.
+
+To keep the example small, the operator watches a custom resource named `Valkey` and creates:
+
+- one `Service`
+- one `Deployment`
+- one `status` update
+
+This is not a production Valkey cluster operator. It is a small learning operator that shows the real project shape, commands, and controller code behind reconciliation.
+
+## What We Will Build
+
+The custom resource will look like this:
+
+```yaml
+apiVersion: cache.example.com/v1alpha1
+kind: Valkey
+metadata:
+  name: valkey-sample
+spec:
+  image: valkey/valkey:8.0
+  replicas: 1
+  port: 6379
+```
+
+When this object is applied, the controller will:
+
+1. read the `Valkey` resource
+2. create or update a `Service`
+3. create or update a `Deployment`
+4. publish `status.phase` and `status.readyReplicas`
+
+## Prerequisites
+
+You need:
+
+- `go`
+- `kubectl`
+- `docker`
+- `kind`
+- `kubebuilder`
+
+Install Kubebuilder:
+
+```bash
+curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+chmod +x kubebuilder
+sudo mv kubebuilder /usr/local/bin/
+kubebuilder version
+```
+
+## Create a Local Cluster
+
+```bash
+kind create cluster --name valkey-operator-doc
+kubectl cluster-info --context kind-valkey-operator-doc
+```
+
+## Scaffold the Project
+
+::: {.callout-note}
+Use a lowercase, hyphen-only project directory such as `valkey-operator-doc`. In local testing, Kubebuilder rejected directory names that used `.` or `_`.
+:::
+
+```bash
+mkdir -p ~/projects/valkey-operator-doc
+cd ~/projects/valkey-operator-doc
+
+kubebuilder init \
+  --domain example.com \
+  --repo github.com/example/valkey-operator \
+  --plugins=go/v4
+
+kubebuilder create api \
+  --group cache \
+  --version v1alpha1 \
+  --kind Valkey \
+  --resource=true \
+  --controller=true
+```
+
+The main files created by the scaffold are:
+
+- `api/v1alpha1/valkey_types.go`
+- `internal/controller/valkey_controller.go`
+- `config/samples/cache_v1alpha1_valkey.yaml`
+
+## Replace the API Type
+
+Open `api/v1alpha1/valkey_types.go` and replace the generated placeholder fields with the following file:
+
+```go
+package v1alpha1
+
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+// ValkeySpec defines the desired state of Valkey
+type ValkeySpec struct {
+	// Image is the Valkey container image to run.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Replicas is the number of pod replicas to run.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Port is the Valkey container port.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+}
+
+// ValkeyStatus defines the observed state of Valkey
+type ValkeyStatus struct {
+	ReadyReplicas int32  `json:"readyReplicas,omitempty"`
+	Phase         string `json:"phase,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+type Valkey struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              ValkeySpec   `json:"spec,omitempty"`
+	Status            ValkeyStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type ValkeyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitzero"`
+	Items           []Valkey `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&Valkey{}, &ValkeyList{})
+}
+```
+
+Generate the CRD and Go code:
+
+```bash
+make manifests generate fmt
+```
+
+## Replace the Controller
+
+Now open `internal/controller/valkey_controller.go` and replace the scaffolded reconcile logic with this controller:
+
+```go
+package controller
+
+import (
+	"context"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	cachev1alpha1 "github.com/example/valkey-operator/api/v1alpha1"
+)
+
+// ValkeyReconciler reconciles a Valkey object
+type ValkeyReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+}
+
+// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+
+func (r *ValkeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	valkey := &cachev1alpha1.Valkey{}
+	if err := r.Get(ctx, req.NamespacedName, valkey); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	labels := map[string]string{
+		"app":        "valkey",
+		"managed-by": "valkey-operator",
+		"instance":   valkey.Name,
+	}
+
+	image := valkey.Spec.Image
+	if image == "" {
+		image = "valkey/valkey:8.0"
+	}
+
+	port := valkey.Spec.Port
+	if port == 0 {
+		port = 6379
+	}
+
+	replicas := int32(1)
+	if valkey.Spec.Replicas != nil {
+		replicas = *valkey.Spec.Replicas
+	}
+
+	svc := &corev1.Service{}
+	svc.Name = valkey.Name
+	svc.Namespace = valkey.Namespace
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = labels
+		svc.Spec.Selector = labels
+		svc.Spec.Ports = []corev1.ServicePort{
+			{
+				Name:       "valkey",
+				Port:       port,
+				TargetPort: intstr.FromInt32(port),
+			},
+		}
+		return controllerutil.SetControllerReference(valkey, svc, r.Scheme)
+	})
+	if err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	deploy := &appsv1.Deployment{}
+	deploy.Name = valkey.Name
+	deploy.Namespace = valkey.Namespace
+
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		deploy.Labels = labels
+		deploy.Spec.Replicas = &replicas
+		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
+		deploy.Spec.Template = corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: labels,
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "valkey",
+						Image: image,
+						Ports: []corev1.ContainerPort{
+							{
+								Name:          "valkey",
+								ContainerPort: port,
+							},
+						},
+					},
+				},
+			},
+		}
+		return controllerutil.SetControllerReference(valkey, deploy, r.Scheme)
+	})
+	if err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	latestDeploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, req.NamespacedName, latestDeploy); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	newStatus := cachev1alpha1.ValkeyStatus{
+		ReadyReplicas: latestDeploy.Status.ReadyReplicas,
+		Phase:         "Creating",
+	}
+	if latestDeploy.Status.ReadyReplicas == replicas {
+		newStatus.Phase = "Ready"
+	}
+
+	if !equality.Semantic.DeepEqual(valkey.Status, newStatus) {
+		valkey.Status = newStatus
+		if err := r.Status().Update(ctx, valkey); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	log.Info("reconciled Valkey", "name", valkey.Name, "namespace", valkey.Namespace)
+	return ctrl.Result{}, nil
+}
+
+func (r *ValkeyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&cachev1alpha1.Valkey{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Named("valkey").
+		Complete(r)
+}
+```
+
+Generate code again and make sure the project still builds:
+
+```bash
+make manifests generate fmt
+go build ./...
+```
+
+## Replace the Sample Custom Resource
+
+Edit `config/samples/cache_v1alpha1_valkey.yaml` to:
+
+```yaml
+apiVersion: cache.example.com/v1alpha1
+kind: Valkey
+metadata:
+  name: valkey-sample
+spec:
+  image: valkey/valkey:8.0
+  replicas: 1
+  port: 6379
+```
+
+## Run the Tests
+
+Use the scaffolded test target:
+
+```bash
+make test
+```
+
+::: {.callout-note}
+`make test` downloads the envtest binaries automatically. On a fresh machine, plain `go test ./...` can fail because the local `etcd` and `kube-apiserver` test assets are not installed yet.
+:::
+
+## Install the CRD and Run the Controller
+
+Install the CRD into the cluster:
+
+```bash
+make install
+```
+
+Run the controller from another terminal:
+
+```bash
+cd ~/projects/valkey-operator-doc
+make run
+```
+
+::: {.callout-warning}
+If `make run` fails with `listen tcp :8081: bind: address already in use`, run the manager directly with a different probe port:
+
+```bash
+go run ./cmd/main.go --health-probe-bind-address=:18081
+```
+:::
+
+## Apply the Sample Resource
+
+With the controller still running, apply the sample:
+
+```bash
+kubectl apply -f config/samples/cache_v1alpha1_valkey.yaml
+```
+
+## Verify the Result
+
+Check that the `Service` and `Deployment` were created:
+
+```bash
+kubectl get service valkey-sample
+kubectl get deployment valkey-sample
+kubectl wait --for=condition=available deployment/valkey-sample --timeout=180s
+```
+
+Then check the custom resource status:
+
+```bash
+kubectl get valkey valkey-sample -o=jsonpath='{.status.phase}{"\n"}{.status.readyReplicas}{"\n"}'
+```
+
+Expected output:
+
+```text
+Ready
+1
+```
+
+If you want the full object:
+
+```bash
+kubectl get valkey valkey-sample -o yaml
+```
+
+## What This Walkthrough Proved
+
+This walkthrough was validated on a fresh local `kind` cluster. The end result was:
+
+- CRD installed successfully
+- `Valkey` sample created successfully
+- `Service` created
+- `Deployment` created
+- pod reached `Running`
+- `status.phase=Ready`
+- `status.readyReplicas=1`
+
+## Cleanup
+
+Delete the sample and remove the cluster when you are done:
+
+```bash
+kubectl delete -f config/samples/cache_v1alpha1_valkey.yaml
+kind delete cluster --name valkey-operator-doc
+```
+
+The important lesson from this chapter is not the size of the controller. It is the full end-to-end chain:
+
+- define the API
+- write reconcile logic
+- install the CRD
+- run the manager
+- apply a CR
+- watch child resources appear
+- publish status back to the CR

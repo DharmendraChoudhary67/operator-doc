@@ -1,0 +1,33 @@
+---
+title: "Appendix: Code and Design References"
+---
+
+This appendix points to the repositories and design threads behind the work discussed in this booklet.
+
+::: {.callout-note}
+The scratch-built operator repository may be access-controlled depending on where this booklet is shared. The link is still useful for team members who already have access.
+:::
+
+## Scratch-Built Operator
+
+- Our scratch-built operator repository: [DharmendraChoudhary67/valkey-cluster-operator](https://github.com/DharmendraChoudhary67/valkey-cluster-operator)
+
+## Reference Operator
+
+- OpsTree Redis Operator: [OT-CONTAINER-KIT/redis-operator](https://github.com/OT-CONTAINER-KIT/redis-operator)
+
+## Official Valkey Operator
+
+- Upstream project: [valkey-io/valkey-operator](https://github.com/valkey-io/valkey-operator)
+- Our fork used for design and implementation work: [DharmendraChoudhary67/valkey-operator](https://github.com/DharmendraChoudhary67/valkey-operator)
+
+## Change Threads We Worked Through
+
+- Earlier StatefulSet `volumeClaimTemplates` persistence branch: [codex/statefulset-pvc-storage](https://github.com/DharmendraChoudhary67/valkey-operator/tree/codex/statefulset-pvc-storage)
+- Earlier StatefulSet persistence compare view: [main...codex/statefulset-pvc-storage](https://github.com/DharmendraChoudhary67/valkey-operator/compare/main...codex/statefulset-pvc-storage)
+- `ValkeyNode`-managed persistence compare view: [main...codex/valkeynode-managed-persistence](https://github.com/DharmendraChoudhary67/valkey-operator/compare/main...codex/valkeynode-managed-persistence)
+
+## Design Discussions
+
+- Persistence design discussion: [Issue #121](https://github.com/valkey-io/valkey-operator/issues/121)
+- Shard-aware placement discussion: [Issue #146](https://github.com/valkey-io/valkey-operator/issues/146)
