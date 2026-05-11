@@ -31,6 +31,5 @@ That means we will cover:
   - no-operator
   - OpsTree
   - our scratch-built operator
-  - the official operator with our PVC and shard-affinity design direction
-
+  - the official operator with our merged PVC work and our in-flight shard-aware placement work
 

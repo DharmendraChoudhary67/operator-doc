@@ -13,6 +13,18 @@ Two tracks mattered most:
 - PVC-backed persistence
 - shard-aware placement
 
+## Upstream Status Snapshot
+
+This chapter is not only about design ideas. It is also about what happened when those ideas were taken upstream.
+
+- On May 5, 2026, the persistence track merged upstream as [PR #149: Add ValkeyNode-managed persistence support](https://github.com/valkey-io/valkey-operator/pull/149).
+- As of May 11, 2026, the shard-aware placement track is still in review as [PR #163: feat: add shard-aware topology spread constraints](https://github.com/valkey-io/valkey-operator/pull/163).
+
+That gives this chapter a useful split:
+
+- one part of our work is now part of the official operator
+- one part is still shaping the upstream design conversation
+
 ## Change Track 1: PVC-Backed Persistence
 
 The persistence discussion changed over time. That is important, because the final direction only makes sense after seeing what the earlier approach could and could not do.
@@ -82,6 +94,19 @@ The design we moved toward was:
 3. let the `ValkeyNode` controller create and manage a named PVC directly
 4. mount that PVC into the workload created for the node
 5. surface PVC readiness and resize state through `ValkeyNode.status`
+
+## What Happened Upstream
+
+This persistence direction is no longer just a proposal in our notes.
+
+It landed upstream through [PR #149](https://github.com/valkey-io/valkey-operator/pull/149), which means the official operator now has:
+
+- cluster-level persistence intent on `ValkeyCluster`
+- propagation of that intent into each `ValkeyNode`
+- node-managed PVC lifecycle
+- reclaim behavior
+- resize-aware status reporting
+
 
 ## Persistence Flow With the New Design
 
@@ -176,6 +201,25 @@ The design direction here was:
 3. augment the selector with shard-aware labels in the resource builder
 4. let the scheduler enforce spread across the topology domain
 
+## What Is Happening Upstream Now
+
+The placement track followed a different path.
+
+Our first anti-affinity-oriented PR was a step toward the problem, but the design discussion moved toward a more native Kubernetes model:
+
+- use `topologySpreadConstraints`
+- keep the API expressive
+- add shard-awareness by augmenting selectors and label keys
+- surface scheduling failure clearly when a strict policy cannot be satisfied
+
+That is what the current upstream work in [PR #163](https://github.com/valkey-io/valkey-operator/pull/163) represents.
+
+So unlike persistence, placement should be described here as:
+
+- an active upstream proposal
+- already implemented and tested in our branch
+- still under review as part of the official operator's future direction
+
 That made the control path cleaner:
 
 - the cluster spec declares the placement intent
@@ -204,4 +248,3 @@ What we already have is:
 - a cleaner upstream-friendly direction than a custom webhook dependency
 
 What still needs final agreement is the exact external API and how strict the placement guarantees should be under capacity pressure.
-
