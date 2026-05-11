@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.37">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Official Operator: Our Changes and Design Direction – Kubernetes Operators and the Valkey Cluster</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../">
+<link href="../acts/03-how-the-cluster-lives.html" rel="next">
+<link href="../acts/official-operator-runtime.html" rel="prev">
+<script src="../site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="../site_libs/quarto-html/popper.min.js"></script>
+<script src="../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../site_libs/quarto-html/quarto-syntax-highlighting-7f8f88aac4f3542376d5c11b86a4c14d.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../site_libs/bootstrap/bootstrap-367522ac618891c39d4b2ae87ea7600e.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+<script src="../site_libs/quarto-diagram/mermaid.min.js"></script>
+<script src="../site_libs/quarto-diagram/mermaid-init.js"></script>
+<link href="../site_libs/quarto-diagram/mermaid.css" rel="stylesheet">
+
+
+<link rel="stylesheet" href="../styles.css">
+</head>
+
+<body class="nav-sidebar floating fullcontent quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../acts/official-operator-our-changes.html"><span class="chapter-title">Official Operator: Our Changes and Design Direction</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../">Kubernetes Operators and the Valkey Cluster</a> 
+        <div class="sidebar-tools-main">
+    <a href="https://github.com/DharmendraChoudhary67/operator-doc" title="Source Code" class="quarto-navigation-tool px-1" aria-label="Source Code"><i class="bi bi-github"></i></a>
+</div>
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../index.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Overview</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/01-the-problem.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">When the Crown Falls</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/02-building-an-operator.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Operators</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/basic-operator-in-practice.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Create a Basic Operator: Commands and Code</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/04-operator-paths.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">The Workstreams We Actually Explored</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/scratch-and-opstree-flow.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Scratch-Built Operator and OpsTree-Style Flow</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/official-operator-runtime.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Official Valkey Operator</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/official-operator-our-changes.html" class="sidebar-item-text sidebar-link active"><span class="chapter-title">Official Operator: Our Changes and Design Direction</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../acts/03-how-the-cluster-lives.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">The Living Cluster</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../appendix/01-system-replays.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Appendix: System Replays</span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../appendix/02-code-and-design-references.html" class="sidebar-item-text sidebar-link"><span class="chapter-title">Appendix: Code and Design References</span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title"><span class="chapter-title">Official Operator: Our Changes and Design Direction</span></h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Once we understood the official operator runtime, the next question was not “can it run at all?” It clearly can.</p>
+<p>The question became:</p>
+<p>What is still missing for our production use case, and how should those pieces be added without breaking the architecture that is already there?</p>
+<p>Two tracks mattered most:</p>
+<ul>
+<li>PVC-backed persistence</li>
+<li>shard-aware placement</li>
+</ul>
+<section id="upstream-status-snapshot" class="level2">
+<h2 class="anchored" data-anchor-id="upstream-status-snapshot">Upstream Status Snapshot</h2>
+<p>This chapter is not only about design ideas. It is also about what happened when those ideas were taken upstream.</p>
+<ul>
+<li>On May 5, 2026, the persistence track merged upstream as <a href="https://github.com/valkey-io/valkey-operator/pull/149">PR #149: Add ValkeyNode-managed persistence support</a>.</li>
+<li>As of May 11, 2026, the shard-aware placement track is still in review as <a href="https://github.com/valkey-io/valkey-operator/pull/163">PR #163: feat: add shard-aware topology spread constraints</a>.</li>
+</ul>
+<p>That gives this chapter a useful split:</p>
+<ul>
+<li>one part of our work is now part of the official operator</li>
+<li>one part is still shaping the upstream design conversation</li>
+</ul>
+</section>
+<section id="change-track-1-pvc-backed-persistence" class="level2">
+<h2 class="anchored" data-anchor-id="change-track-1-pvc-backed-persistence">Change Track 1: PVC-Backed Persistence</h2>
+<p>The persistence discussion changed over time. That is important, because the final direction only makes sense after seeing what the earlier approach could and could not do.</p>
+<section id="first-attempt-statefulset-volumeclaimtemplates" class="level3">
+<h3 class="anchored" data-anchor-id="first-attempt-statefulset-volumeclaimtemplates">First Attempt: StatefulSet <code>volumeClaimTemplates</code></h3>
+<p>The earliest persistence experiment attached storage through the StatefulSet path.</p>
+<p>That meant:</p>
+<ul>
+<li>persistence was tied directly to the StatefulSet workload</li>
+<li>the pod mounted storage coming from <code>volumeClaimTemplates</code></li>
+<li>the design was naturally centered around the StatefulSet resource itself</li>
+</ul>
+<p>This was a reasonable first step because it is a common Kubernetes pattern for stateful workloads.</p>
+</section>
+<section id="why-we-did-not-stop-there" class="level3">
+<h3 class="anchored" data-anchor-id="why-we-did-not-stop-there">Why We Did Not Stop There</h3>
+<p>We did not continue with the pure <code>volumeClaimTemplates</code> path for several reasons.</p>
+<section id="it-was-too-tightly-coupled-to-one-workload-path" class="level4">
+<h4 class="anchored" data-anchor-id="it-was-too-tightly-coupled-to-one-workload-path">1. It was too tightly coupled to one workload path</h4>
+<p>The official operator architecture is centered around <code>ValkeyNode</code>.</p>
+<p>That means the real owner of “this Valkey member needs persistence” is not the raw StatefulSet template. It is the <code>ValkeyNode</code> object that represents that member.</p>
+</section>
+<section id="it-made-persistence-feel-like-a-workload-detail-instead-of-a-node-level-contract" class="level4">
+<h4 class="anchored" data-anchor-id="it-made-persistence-feel-like-a-workload-detail-instead-of-a-node-level-contract">2. It made persistence feel like a workload detail instead of a node-level contract</h4>
+<p>What we actually wanted was:</p>
+<ul>
+<li>cluster spec declares persistence</li>
+<li>that spec is propagated to each <code>ValkeyNode</code></li>
+<li>each node manages its own PVC lifecycle</li>
+</ul>
+<p>That matches the official architecture much better than hiding persistence only inside a workload template.</p>
+</section>
+<section id="volumeclaimtemplates-are-awkward-when-the-storage-story-has-to-evolve" class="level4">
+<h4 class="anchored" data-anchor-id="volumeclaimtemplates-are-awkward-when-the-storage-story-has-to-evolve">3. <code>volumeClaimTemplates</code> are awkward when the storage story has to evolve</h4>
+<p>Our design requirements were not just “attach a volume once.”</p>
+<p>We also cared about:</p>
+<ul>
+<li>explicit reclaim behavior</li>
+<li>clearer status when PVCs are pending</li>
+<li>resize-aware behavior</li>
+<li>node-level visibility</li>
+</ul>
+<p>That becomes harder when the storage logic is buried inside <code>volumeClaimTemplates</code>, especially when the official operator already has a per-node abstraction and when StatefulSet storage changes need careful handling.</p>
+</section>
+<section id="we-wanted-the-pvc-lifecycle-to-be-explicit-and-testable" class="level4">
+<h4 class="anchored" data-anchor-id="we-wanted-the-pvc-lifecycle-to-be-explicit-and-testable">4. We wanted the PVC lifecycle to be explicit and testable</h4>
+<p>At the node level, we could reason much more clearly about:</p>
+<ul>
+<li>when the PVC is created</li>
+<li>when it is ready</li>
+<li>when it is resized</li>
+<li>whether it should be retained or deleted</li>
+</ul>
+<p>That is a much cleaner operational story.</p>
+</section>
+</section>
+</section>
+<section id="the-direction-we-moved-to-valkeynode-managed-pvcs" class="level2">
+<h2 class="anchored" data-anchor-id="the-direction-we-moved-to-valkeynode-managed-pvcs">The Direction We Moved To: <code>ValkeyNode</code>-Managed PVCs</h2>
+<p>The design we moved toward was:</p>
+<ol type="1">
+<li>add <code>persistence</code> to <code>ValkeyCluster</code></li>
+<li>propagate that <code>persistence</code> block to each <code>ValkeyNode</code></li>
+<li>let the <code>ValkeyNode</code> controller create and manage a named PVC directly</li>
+<li>mount that PVC into the workload created for the node</li>
+<li>surface PVC readiness and resize state through <code>ValkeyNode.status</code></li>
+</ol>
+</section>
+<section id="what-happened-upstream" class="level2">
+<h2 class="anchored" data-anchor-id="what-happened-upstream">What Happened Upstream</h2>
+<p>This persistence direction is no longer just a proposal in our notes.</p>
+<p>It landed upstream through <a href="https://github.com/valkey-io/valkey-operator/pull/149">PR #149</a>, which means the official operator now has:</p>
+<ul>
+<li>cluster-level persistence intent on <code>ValkeyCluster</code></li>
+<li>propagation of that intent into each <code>ValkeyNode</code></li>
+<li>node-managed PVC lifecycle</li>
+<li>reclaim behavior</li>
+<li>resize-aware status reporting</li>
+</ul>
+</section>
+<section id="persistence-flow-with-the-new-design" class="level2">
+<h2 class="anchored" data-anchor-id="persistence-flow-with-the-new-design">Persistence Flow With the New Design</h2>
+<div class="cell" data-layout-align="default">
+<div class="cell-output-display">
+<div>
+<p></p><figure class="figure"><p></p>
+<div>
+<pre class="mermaid mermaid-js">flowchart TD
+  A["User sets persistence in ValkeyCluster"] --&gt; B["ValkeyCluster controller propagates persistence to each ValkeyNode"]
+  B --&gt; C["ValkeyNode controller reconciles PVC for that node"]
+  C --&gt; D["PVC created as a first-class child resource"]
+  D --&gt; E["Workload mounts named PVC"]
+  E --&gt; F["Valkey stores data and nodes.conf on persistent storage"]
+  F --&gt; G["ValkeyNode status reports PVC readiness and size state"]
+</pre>
+</div>
+<p></p></figure><p></p>
+</div>
+</div>
+</div>
+</section>
+<section id="what-the-implementation-added" class="level2">
+<h2 class="anchored" data-anchor-id="what-the-implementation-added">What the Implementation Added</h2>
+<p>The persistence work added several concrete pieces:</p>
+<ul>
+<li>a <code>PersistenceSpec</code></li>
+<li>propagation from <code>ValkeyCluster</code> to <code>ValkeyNode</code></li>
+<li>direct PVC creation in the <code>ValkeyNode</code> controller</li>
+<li>status conditions for:
+<ul>
+<li>PVC ready</li>
+<li>PVC size ready</li>
+<li>resize in progress</li>
+<li>resize infeasible</li>
+</ul></li>
+<li>reclaim policy support:
+<ul>
+<li><code>Retain</code></li>
+<li><code>Delete</code></li>
+</ul></li>
+<li>finalizer-driven cleanup when delete behavior is requested</li>
+</ul>
+</section>
+<section id="guardrails-we-added" class="level2">
+<h2 class="anchored" data-anchor-id="guardrails-we-added">Guardrails We Added</h2>
+<p>The design was not “allow anything.”</p>
+<p>We also added guardrails so the operator behaves predictably:</p>
+<ul>
+<li>persistence requires <code>StatefulSet</code></li>
+<li>persistence cannot be removed after creation</li>
+<li>persistence cannot be added later to an existing node</li>
+<li>storage class is immutable</li>
+<li>size can only grow, not shrink</li>
+</ul>
+<p>These rules came from operational reality, not from theory.</p>
+</section>
+<section id="why-this-matches-the-official-architecture-better" class="level2">
+<h2 class="anchored" data-anchor-id="why-this-matches-the-official-architecture-better">Why This Matches the Official Architecture Better</h2>
+<p>This approach fits the official operator because:</p>
+<ul>
+<li><code>ValkeyCluster</code> stays the cluster-level intent</li>
+<li><code>ValkeyNode</code> remains the owner of per-member state</li>
+<li>the <code>ValkeyNode</code> controller remains the place that creates concrete child resources</li>
+<li>PVC lifecycle becomes visible and controllable at the same level as workload lifecycle</li>
+<li>the design can clearly reject unsupported persistence combinations such as <code>Deployment</code> plus durable node storage</li>
+</ul>
+<p>That is why this direction felt stronger than staying with raw StatefulSet claim templates.</p>
+</section>
+<section id="change-track-2-shard-aware-placement" class="level2">
+<h2 class="anchored" data-anchor-id="change-track-2-shard-aware-placement">Change Track 2: Shard-Aware Placement</h2>
+<p>The second important track was placement of <code>Master</code> and its <code>Replica</code>.</p>
+<p>The problem is not generic anti-affinity alone. The real problem is this:</p>
+<ul>
+<li>a primary and its replica should not quietly land in the same failure domain</li>
+<li>the placement policy should understand shard relationships, not just pod labels in general</li>
+</ul>
+</section>
+<section id="what-we-learned-from-the-scratch-operator" class="level2">
+<h2 class="anchored" data-anchor-id="what-we-learned-from-the-scratch-operator">What We Learned From the Scratch Operator</h2>
+<p>In the scratch-built operator, we explored shard safety through:</p>
+<ul>
+<li>an annotation on the pod template</li>
+<li>a mutating webhook</li>
+<li>final anti-affinity injection during pod admission</li>
+</ul>
+<p>That worked well for that architecture because we owned the admission path and the pairing model.</p>
+</section>
+<section id="why-the-official-operator-needed-a-different-shape" class="level2">
+<h2 class="anchored" data-anchor-id="why-the-official-operator-needed-a-different-shape">Why the Official Operator Needed a Different Shape</h2>
+<p>For the official operator, a webhook-first model was less attractive because:</p>
+<ul>
+<li>the operator already has a strong <code>ValkeyNode</code> abstraction</li>
+<li>pod specs are already built in the <code>ValkeyNode</code> controller</li>
+<li>native Kubernetes scheduling fields fit more naturally into that path</li>
+</ul>
+<p>So instead of copying the webhook model directly, we explored a more native approach.</p>
+</section>
+<section id="the-direction-we-explored-topology-spread-constraints" class="level2">
+<h2 class="anchored" data-anchor-id="the-direction-we-explored-topology-spread-constraints">The Direction We Explored: Topology Spread Constraints</h2>
+<p>The design direction here was:</p>
+<ol type="1">
+<li>expose topology spread configuration at cluster level</li>
+<li>propagate it to each <code>ValkeyNode</code></li>
+<li>augment the selector with shard-aware labels in the resource builder</li>
+<li>let the scheduler enforce spread across the topology domain</li>
+</ol>
+</section>
+<section id="what-is-happening-upstream-now" class="level2">
+<h2 class="anchored" data-anchor-id="what-is-happening-upstream-now">What Is Happening Upstream Now</h2>
+<p>The placement track followed a different path.</p>
+<p>Our first anti-affinity-oriented PR was a step toward the problem, but the design discussion moved toward a more native Kubernetes model:</p>
+<ul>
+<li>use <code>topologySpreadConstraints</code></li>
+<li>keep the API expressive</li>
+<li>add shard-awareness by augmenting selectors and label keys</li>
+<li>surface scheduling failure clearly when a strict policy cannot be satisfied</li>
+</ul>
+<p>That is what the current upstream work in <a href="https://github.com/valkey-io/valkey-operator/pull/163">PR #163</a> represents.</p>
+<p>So unlike persistence, placement should be described here as:</p>
+<ul>
+<li>an active upstream proposal</li>
+<li>already implemented and tested in our branch</li>
+<li>still under review as part of the official operator’s future direction</li>
+</ul>
+<p>That made the control path cleaner:</p>
+<ul>
+<li>the cluster spec declares the placement intent</li>
+<li>the <code>ValkeyNode</code> spec carries the per-node version of that intent</li>
+<li>the pod template is built with the final topology spread constraints</li>
+<li>the scheduler sees a normal native Kubernetes scheduling spec</li>
+</ul>
+</section>
+<section id="placement-flow-with-the-official-operator-direction" class="level2">
+<h2 class="anchored" data-anchor-id="placement-flow-with-the-official-operator-direction">Placement Flow With the Official Operator Direction</h2>
+<div class="cell" data-layout-align="default">
+<div class="cell-output-display">
+<div>
+<p></p><figure class="figure"><p></p>
+<div>
+<pre class="mermaid mermaid-js">flowchart TD
+  A["User sets placement policy on ValkeyCluster"] --&gt; B["ValkeyCluster controller copies policy to ValkeyNode"]
+  B --&gt; C["ValkeyNode resource builder augments topology selectors with cluster and shard labels"]
+  C --&gt; D["Workload pod template contains final topologySpreadConstraints"]
+  D --&gt; E["Scheduler spreads primary and replica pods across topology domains"]
+</pre>
+</div>
+<p></p></figure><p></p>
+</div>
+</div>
+</div>
+</section>
+<section id="what-is-still-open" class="level2">
+<h2 class="anchored" data-anchor-id="what-is-still-open">What Is Still Open</h2>
+<p>The placement design discussion is still evolving, and that should be stated clearly.</p>
+<p>What we already have is:</p>
+<ul>
+<li>a much better understanding of the right insertion point</li>
+<li>code showing how shard-aware topology spread can be generated</li>
+<li>a cleaner upstream-friendly direction than a custom webhook dependency</li>
+</ul>
+<p>What still needs final agreement is the exact external API and how strict the placement guarantees should be under capacity pressure.</p>
+
+
+</section>
+
+</main> <!-- /main -->
+<script>
+document.addEventListener("keydown", function (event) {
+  const target = event.target;
+  const isTypingContext =
+    target &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT" ||
+      target.isContentEditable);
+
+  if (isTypingContext || event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  const prev = document.querySelector('link[rel="prev"]');
+  const next = document.querySelector('link[rel="next"]');
+
+  if (event.key === "ArrowLeft" && prev) {
+    window.location.href = prev.href;
+  }
+
+  if (event.key === "ArrowRight" && next) {
+    window.location.href = next.href;
+  }
+});
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../acts/official-operator-runtime.html" class="pagination-link" aria-label="Official Valkey Operator">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-title">Official Valkey Operator</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../acts/03-how-the-cluster-lives.html" class="pagination-link" aria-label="The Living Cluster">
+        <span class="nav-page-text"><span class="chapter-title">The Living Cluster</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+
+
+
+
+<script src="../site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

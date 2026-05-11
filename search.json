@@ -1,0 +1,892 @@
+[
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Kubernetes Operators and the Valkey Cluster",
+    "section": "",
+    "text": "What This Booklet Covers\nCluster looks calm from a distance.\nRequests arrive, pods answer, replicas follow, and the control plane keeps the skyline steady. But the peace is slightly deceptive. This city is held together by memory, routing, trust, and timing. The moment one leader disappears, every hidden system starts speaking at once.\nThis booklet uses this moment as the entry point, then teaches the system layer by layer.\nThat means we will cover:",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>Overview</span>"
+    ]
+  },
+  {
+    "objectID": "index.html#what-this-booklet-covers",
+    "href": "index.html#what-this-booklet-covers",
+    "title": "Kubernetes Operators and the Valkey Cluster",
+    "section": "",
+    "text": "Kubernetes operators 101\nbasic operator creation flow\na hands-on basic operator walkthrough with commands and code\nways to build an operator and the tradeoffs behind each path\nHelm charts and how they differ from operators\nValkey cluster behavior, including gossip and slot ownership\nnetworking, headless services, and cluster-aware clients\nsecrets, storage, and node identity\nthe four paths we explored:\n\nno-operator\nOpsTree\nour scratch-built operator\nthe official operator with our merged PVC work and our in-flight shard-aware placement work",
+    "crumbs": [
+      "<span class='chapter-number'>1</span>  <span class='chapter-title'>Overview</span>"
+    ]
+  },
+  {
+    "objectID": "acts/01-the-problem.html",
+    "href": "acts/01-the-problem.html",
+    "title": "When the Crown Falls",
+    "section": "",
+    "text": "The Main Components\nWe start with leader failure because it is the fastest way to see the whole system at once.\nTraffic is still flowing. The client still wants answers. Somewhere inside the cluster, replicas are listening, gossip is moving, and the system has to decide whether this is a brief interruption, a real failure, or the beginning of a failover story.\nThis single scene exposes the roles of Kubernetes, operators, storage, networking, and secrets.\nThe rest of the booklet keeps returning to three questions:",
+    "crumbs": [
+      "<span class='chapter-number'>2</span>  <span class='chapter-title'>When the Crown Falls</span>"
+    ]
+  },
+  {
+    "objectID": "acts/01-the-problem.html#the-main-components",
+    "href": "acts/01-the-problem.html#the-main-components",
+    "title": "When the Crown Falls",
+    "section": "",
+    "text": "Component\nReal system role\nWhy it matters\n\n\n\n\nKubernetes control plane\nAPI server, controller loops, scheduler, and resource lifecycle management\nkeeps desired state, scheduling, and resource lifecycles moving\n\n\nOperator / controller\napplication-specific reconciliation logic\nencodes application-specific behavior and recovery logic\n\n\nValkey nodes\nrunning Valkey members\nown slots, replication, and runtime cluster state\n\n\nValkey cluster bus\nnode-to-node gossip channel\nspreads topology changes and failure signals\n\n\nPVC / persistent storage\npersistent volume claims and attached storage\nkeeps data and cluster memory alive across pod restarts\n\n\nnodes.conf\nlocal node identity file\npreserves node ID and peer knowledge\n\n\nClient\napplication or API client\nfeels redirects, retries, and outages first\n\n\nSecrets path\nSecrets, API server, etcd, kubelet\ncontrols trust material such as passwords, ACLs, and TLS",
+    "crumbs": [
+      "<span class='chapter-number'>2</span>  <span class='chapter-title'>When the Crown Falls</span>"
+    ]
+  },
+  {
+    "objectID": "acts/01-the-problem.html#why-this-is-more-than-run-a-statefulset",
+    "href": "acts/01-the-problem.html#why-this-is-more-than-run-a-statefulset",
+    "title": "When the Crown Falls",
+    "section": "Why This Is More Than “Run a StatefulSet”",
+    "text": "Why This Is More Than “Run a StatefulSet”\nValkey on Kubernetes is not only about keeping containers alive. It is about preserving the things that make a cluster recognizable to itself:\n\nslot ownership\nreplica relationships\nnode identity\nstable networking references\ntrusted credentials\n\nKubernetes can restart pods and recreate resources, but it does not naturally understand shard ownership, cluster join order, or what it means for a node to return with memory. That is the gap where operators become useful.",
+    "crumbs": [
+      "<span class='chapter-number'>2</span>  <span class='chapter-title'>When the Crown Falls</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html",
+    "href": "acts/02-building-an-operator.html",
+    "title": "Operators",
+    "section": "",
+    "text": "What the Reconcile Loop Actually Looks Like\nNow we discuss what an operator really does, how a basic operator is created, and where Helm charts fit in this picture.\nKubernetes already knows how to keep resources present, restart failed containers, and converge generic object state. What it does not know by itself is how a clustered data system should form, heal, scale, and report readiness. An operator fills that gap by continuously observing real state and reconciling it against the desired one.\nflowchart TD\n  A[\"Operator asks API server for CR, status, and child resource state\"] --&gt; B[\"API server serves the current object view\"]\n  B --&gt; C[\"Watch event reaches the operator when something changes\"]\n  C --&gt; D[\"Operator compares desired state with actual state\"]\n  D --&gt; E{\"Mismatch found?\"}\n  E -- no --&gt; A\n  E -- yes --&gt; F[\"Operator creates, updates, or deletes resources\"]\n  F --&gt; G[\"Operator updates CR status through the API server\"]\n  G --&gt; H[\"API server stores the new state in etcd\"]\n  H --&gt; A\nIn practice, the operator spends most of its life in this loop:\nThe important technical point is that the controller watches through the Kubernetes API server. etcd is the backing store, but the controller does not talk to etcd directly.",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html#what-the-reconcile-loop-actually-looks-like",
+    "href": "acts/02-building-an-operator.html#what-the-reconcile-loop-actually-looks-like",
+    "title": "Operators",
+    "section": "",
+    "text": "read desired state from the custom resource\ninspect current state from Kubernetes and sometimes from the application itself\ndetect mismatch\nreconcile by creating, updating, or cleaning resources\nupdate status so users can see what happened",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html#where-helm-charts-fit",
+    "href": "acts/02-building-an-operator.html#where-helm-charts-fit",
+    "title": "Operators",
+    "section": "Where Helm Charts Fit",
+    "text": "Where Helm Charts Fit\nHelm charts are not the same thing as operators, but they are still important in Kubernetes application delivery.\nHelm is very good at:\n\npackaging Kubernetes manifests\ntemplating values for different environments\ninstalling and upgrading releases\nmanaging standard objects such as Deployments, StatefulSets, Services, and ConfigMaps\n\nFor many applications, a Helm chart is enough. For clustered stateful systems, Helm alone usually stops short when runtime decision-making is needed.\n\n\n\n\n\n\n\n\nTopic\nHelm chart\nOperator\n\n\n\n\nmain job\npackage and install manifests\ncontinuously manage application-specific lifecycle\n\n\nmodel\nrender templates and apply them\nwatch events and reconcile continuously\n\n\nruntime awareness\nlimited\nstrong\n\n\napplication-specific healing\nusually manual or external\nbuilt into controller logic\n\n\nbest fit\nstandard app delivery\nstateful systems with cluster behavior\n\n\n\nAn operator can also be packaged and installed with Helm. The difference is that Helm delivers resources, while the operator keeps working after installation.",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html#ways-to-create-an-operator",
+    "href": "acts/02-building-an-operator.html#ways-to-create-an-operator",
+    "title": "Operators",
+    "section": "Ways to Create an Operator",
+    "text": "Ways to Create an Operator\nThere is no single mandatory toolchain. The path depends on how much custom lifecycle logic the workload needs.\n\n\n\n\n\n\n\n\nApproach\nBest when\nTradeoff\n\n\n\n\nKubebuilder\nyou want native controller patterns, CRDs, and webhooks\nmore code, more control\n\n\nOperator SDK\nyou want a controller-based operator with packaging support\nsimilar complexity to Kubebuilder, but a more operator-centered project layout\n\n\nHelm or Ansible operators\nthe lifecycle is closer to templating and orchestration than deep reconciliation\nsimpler to begin, but can get tight once runtime logic becomes complex\n\n\ndirect controller code\nyou want full control over every interaction point\nmaximum flexibility and maximum ownership burden",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html#which-language-makes-sense",
+    "href": "acts/02-building-an-operator.html#which-language-makes-sense",
+    "title": "Operators",
+    "section": "Which Language Makes Sense",
+    "text": "Which Language Makes Sense\nFor Kubernetes operators, Go is the strongest default.\nThe reason is practical rather than ideological:\n\nthe Kubernetes ecosystem is Go-first\nclient-go and controller-runtime are strongest there\nmost advanced examples, webhooks, and controller patterns are easier to find in Go\n\nOther languages are still possible, but for controller-heavy work with custom reconciliation and admission hooks, Go usually gives the cleanest path.",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/02-building-an-operator.html#basic-operator-creation-flow",
+    "href": "acts/02-building-an-operator.html#basic-operator-creation-flow",
+    "title": "Operators",
+    "section": "Basic Operator Creation Flow",
+    "text": "Basic Operator Creation Flow\nAt a practical level, a simple Go operator usually starts like this:\n\n\n\n\n\nflowchart TD\n  A[\"kubebuilder init\"] --&gt; B[\"kubebuilder create api\"]\n  B --&gt; C[\"Edit api/v1alpha1/valkey_types.go\"]\n  C --&gt; D[\"Edit internal/controller/valkey_controller.go\"]\n  D --&gt; E[\"make manifests generate fmt\"]\n  E --&gt; F[\"make install\"]\n  F --&gt; G[\"Run the manager\"]\n  G --&gt; H[\"kubectl apply sample CR\"]\n  H --&gt; I[\"Controller creates child resources and updates status\"]\n\n\n\n\n\n\nThe important implementation stages are:\n\ndefine the custom resource shape\ncreate the CRD and API types\nwrite the controller and its reconcile method\nset up RBAC, manager wiring, and deployment\nadd webhooks when validation or mutation is needed\ndeploy the operator and test it with a real custom resource\n\nThe next chapter follows this exact path with the real files and commands.",
+    "crumbs": [
+      "<span class='chapter-number'>3</span>  <span class='chapter-title'>Operators</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html",
+    "href": "acts/basic-operator-in-practice.html",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "",
+    "text": "What We Will Build\nThis chapter shows one concrete operator path that can be followed on a real machine.\nTo keep the example small, the operator watches a custom resource named Valkey and creates:\nThis is not a production Valkey cluster operator. It is a small learning operator that shows the real project shape, commands, and controller code behind reconciliation.\nThe custom resource will look like this:\nWhen this object is applied, the controller will:",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#what-we-will-build",
+    "href": "acts/basic-operator-in-practice.html#what-we-will-build",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "",
+    "text": "apiVersion: cache.example.com/v1alpha1\nkind: Valkey\nmetadata:\n  name: valkey-sample\nspec:\n  image: valkey/valkey:8.0\n  replicas: 1\n  port: 6379\n\n\nread the Valkey resource\ncreate or update a Service\ncreate or update a Deployment\npublish status.phase and status.readyReplicas",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#prerequisites",
+    "href": "acts/basic-operator-in-practice.html#prerequisites",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Prerequisites",
+    "text": "Prerequisites\nYou need:\n\ngo\nkubectl\ndocker\nkind\nkubebuilder\n\nInstall Kubebuilder:\ncurl -L -o kubebuilder \"https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)\"\nchmod +x kubebuilder\nsudo mv kubebuilder /usr/local/bin/\nkubebuilder version",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#create-a-local-cluster",
+    "href": "acts/basic-operator-in-practice.html#create-a-local-cluster",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Create a Local Cluster",
+    "text": "Create a Local Cluster\nkind create cluster --name valkey-operator-doc\nkubectl cluster-info --context kind-valkey-operator-doc",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#scaffold-the-project",
+    "href": "acts/basic-operator-in-practice.html#scaffold-the-project",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Scaffold the Project",
+    "text": "Scaffold the Project\n\n\n\n\n\n\nNote\n\n\n\nUse a lowercase, hyphen-only project directory such as valkey-operator-doc. In local testing, Kubebuilder rejected directory names that used . or _.\n\n\nmkdir -p ~/projects/valkey-operator-doc\ncd ~/projects/valkey-operator-doc\n\nkubebuilder init \\\n  --domain example.com \\\n  --repo github.com/example/valkey-operator \\\n  --plugins=go/v4\n\nkubebuilder create api \\\n  --group cache \\\n  --version v1alpha1 \\\n  --kind Valkey \\\n  --resource=true \\\n  --controller=true\nThe main files created by the scaffold are:\n\napi/v1alpha1/valkey_types.go\ninternal/controller/valkey_controller.go\nconfig/samples/cache_v1alpha1_valkey.yaml",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#replace-the-api-type",
+    "href": "acts/basic-operator-in-practice.html#replace-the-api-type",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Replace the API Type",
+    "text": "Replace the API Type\nOpen api/v1alpha1/valkey_types.go and replace the generated placeholder fields with the following file:\npackage v1alpha1\n\nimport metav1 \"k8s.io/apimachinery/pkg/apis/meta/v1\"\n\n// ValkeySpec defines the desired state of Valkey\ntype ValkeySpec struct {\n    // Image is the Valkey container image to run.\n    // +kubebuilder:validation:MinLength=1\n    // +optional\n    Image string `json:\"image,omitempty\"`\n\n    // Replicas is the number of pod replicas to run.\n    // +kubebuilder:validation:Minimum=1\n    // +kubebuilder:validation:Maximum=3\n    // +optional\n    Replicas *int32 `json:\"replicas,omitempty\"`\n\n    // Port is the Valkey container port.\n    // +kubebuilder:validation:Minimum=1\n    // +kubebuilder:validation:Maximum=65535\n    // +optional\n    Port int32 `json:\"port,omitempty\"`\n}\n\n// ValkeyStatus defines the observed state of Valkey\ntype ValkeyStatus struct {\n    ReadyReplicas int32  `json:\"readyReplicas,omitempty\"`\n    Phase         string `json:\"phase,omitempty\"`\n}\n\n// +kubebuilder:object:root=true\n// +kubebuilder:subresource:status\ntype Valkey struct {\n    metav1.TypeMeta   `json:\",inline\"`\n    metav1.ObjectMeta `json:\"metadata,omitempty\"`\n    Spec              ValkeySpec   `json:\"spec,omitempty\"`\n    Status            ValkeyStatus `json:\"status,omitempty\"`\n}\n\n// +kubebuilder:object:root=true\ntype ValkeyList struct {\n    metav1.TypeMeta `json:\",inline\"`\n    metav1.ListMeta `json:\"metadata,omitzero\"`\n    Items           []Valkey `json:\"items\"`\n}\n\nfunc init() {\n    SchemeBuilder.Register(&Valkey{}, &ValkeyList{})\n}\nGenerate the CRD and Go code:\nmake manifests generate fmt",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#replace-the-controller",
+    "href": "acts/basic-operator-in-practice.html#replace-the-controller",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Replace the Controller",
+    "text": "Replace the Controller\nNow open internal/controller/valkey_controller.go and replace the scaffolded reconcile logic with this controller:\npackage controller\n\nimport (\n    \"context\"\n\n    appsv1 \"k8s.io/api/apps/v1\"\n    corev1 \"k8s.io/api/core/v1\"\n    \"k8s.io/apimachinery/pkg/api/equality\"\n    apierrors \"k8s.io/apimachinery/pkg/api/errors\"\n    metav1 \"k8s.io/apimachinery/pkg/apis/meta/v1\"\n    \"k8s.io/apimachinery/pkg/runtime\"\n    \"k8s.io/apimachinery/pkg/util/intstr\"\n    ctrl \"sigs.k8s.io/controller-runtime\"\n    \"sigs.k8s.io/controller-runtime/pkg/client\"\n    \"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil\"\n    logf \"sigs.k8s.io/controller-runtime/pkg/log\"\n\n    cachev1alpha1 \"github.com/example/valkey-operator/api/v1alpha1\"\n)\n\n// ValkeyReconciler reconciles a Valkey object\ntype ValkeyReconciler struct {\n    client.Client\n    Scheme *runtime.Scheme\n}\n\n// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys,verbs=get;list;watch;create;update;patch;delete\n// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys/status,verbs=get;update;patch\n// +kubebuilder:rbac:groups=cache.example.com,resources=valkeys/finalizers,verbs=update\n// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete\n// +kubebuilder:rbac:groups=apps,resources=deployments/status,verbs=get;list;watch\n// +kubebuilder:rbac:groups=\"\",resources=services,verbs=get;list;watch;create;update;patch;delete\n\nfunc (r *ValkeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {\n    log := logf.FromContext(ctx)\n\n    valkey := &cachev1alpha1.Valkey{}\n    if err := r.Get(ctx, req.NamespacedName, valkey); err != nil {\n        return ctrl.Result{}, client.IgnoreNotFound(err)\n    }\n\n    labels := map[string]string{\n        \"app\":        \"valkey\",\n        \"managed-by\": \"valkey-operator\",\n        \"instance\":   valkey.Name,\n    }\n\n    image := valkey.Spec.Image\n    if image == \"\" {\n        image = \"valkey/valkey:8.0\"\n    }\n\n    port := valkey.Spec.Port\n    if port == 0 {\n        port = 6379\n    }\n\n    replicas := int32(1)\n    if valkey.Spec.Replicas != nil {\n        replicas = *valkey.Spec.Replicas\n    }\n\n    svc := &corev1.Service{}\n    svc.Name = valkey.Name\n    svc.Namespace = valkey.Namespace\n\n    _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {\n        svc.Labels = labels\n        svc.Spec.Selector = labels\n        svc.Spec.Ports = []corev1.ServicePort{\n            {\n                Name:       \"valkey\",\n                Port:       port,\n                TargetPort: intstr.FromInt32(port),\n            },\n        }\n        return controllerutil.SetControllerReference(valkey, svc, r.Scheme)\n    })\n    if err != nil {\n        if apierrors.IsConflict(err) {\n            return ctrl.Result{Requeue: true}, nil\n        }\n        return ctrl.Result{}, err\n    }\n\n    deploy := &appsv1.Deployment{}\n    deploy.Name = valkey.Name\n    deploy.Namespace = valkey.Namespace\n\n    _, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {\n        deploy.Labels = labels\n        deploy.Spec.Replicas = &replicas\n        deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}\n        deploy.Spec.Template = corev1.PodTemplateSpec{\n            ObjectMeta: metav1.ObjectMeta{\n                Labels: labels,\n            },\n            Spec: corev1.PodSpec{\n                Containers: []corev1.Container{\n                    {\n                        Name:  \"valkey\",\n                        Image: image,\n                        Ports: []corev1.ContainerPort{\n                            {\n                                Name:          \"valkey\",\n                                ContainerPort: port,\n                            },\n                        },\n                    },\n                },\n            },\n        }\n        return controllerutil.SetControllerReference(valkey, deploy, r.Scheme)\n    })\n    if err != nil {\n        if apierrors.IsConflict(err) {\n            return ctrl.Result{Requeue: true}, nil\n        }\n        return ctrl.Result{}, err\n    }\n\n    latestDeploy := &appsv1.Deployment{}\n    if err := r.Get(ctx, req.NamespacedName, latestDeploy); err != nil {\n        return ctrl.Result{}, err\n    }\n\n    newStatus := cachev1alpha1.ValkeyStatus{\n        ReadyReplicas: latestDeploy.Status.ReadyReplicas,\n        Phase:         \"Creating\",\n    }\n    if latestDeploy.Status.ReadyReplicas == replicas {\n        newStatus.Phase = \"Ready\"\n    }\n\n    if !equality.Semantic.DeepEqual(valkey.Status, newStatus) {\n        valkey.Status = newStatus\n        if err := r.Status().Update(ctx, valkey); err != nil {\n            if apierrors.IsConflict(err) {\n                return ctrl.Result{Requeue: true}, nil\n            }\n            return ctrl.Result{}, err\n        }\n    }\n\n    log.Info(\"reconciled Valkey\", \"name\", valkey.Name, \"namespace\", valkey.Namespace)\n    return ctrl.Result{}, nil\n}\n\nfunc (r *ValkeyReconciler) SetupWithManager(mgr ctrl.Manager) error {\n    return ctrl.NewControllerManagedBy(mgr).\n        For(&cachev1alpha1.Valkey{}).\n        Owns(&appsv1.Deployment{}).\n        Owns(&corev1.Service{}).\n        Named(\"valkey\").\n        Complete(r)\n}\nGenerate code again and make sure the project still builds:\nmake manifests generate fmt\ngo build ./...",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#replace-the-sample-custom-resource",
+    "href": "acts/basic-operator-in-practice.html#replace-the-sample-custom-resource",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Replace the Sample Custom Resource",
+    "text": "Replace the Sample Custom Resource\nEdit config/samples/cache_v1alpha1_valkey.yaml to:\napiVersion: cache.example.com/v1alpha1\nkind: Valkey\nmetadata:\n  name: valkey-sample\nspec:\n  image: valkey/valkey:8.0\n  replicas: 1\n  port: 6379",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#run-the-tests",
+    "href": "acts/basic-operator-in-practice.html#run-the-tests",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Run the Tests",
+    "text": "Run the Tests\nUse the scaffolded test target:\nmake test\n\n\n\n\n\n\nNote\n\n\n\nmake test downloads the envtest binaries automatically. On a fresh machine, plain go test ./... can fail because the local etcd and kube-apiserver test assets are not installed yet.",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#install-the-crd-and-run-the-controller",
+    "href": "acts/basic-operator-in-practice.html#install-the-crd-and-run-the-controller",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Install the CRD and Run the Controller",
+    "text": "Install the CRD and Run the Controller\nInstall the CRD into the cluster:\nmake install\nRun the controller from another terminal:\ncd ~/projects/valkey-operator-doc\nmake run\n\n\n\n\n\n\nWarning\n\n\n\nIf make run fails with listen tcp :8081: bind: address already in use, run the manager directly with a different probe port:\ngo run ./cmd/main.go --health-probe-bind-address=:18081",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#apply-the-sample-resource",
+    "href": "acts/basic-operator-in-practice.html#apply-the-sample-resource",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Apply the Sample Resource",
+    "text": "Apply the Sample Resource\nWith the controller still running, apply the sample:\nkubectl apply -f config/samples/cache_v1alpha1_valkey.yaml",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#verify-the-result",
+    "href": "acts/basic-operator-in-practice.html#verify-the-result",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Verify the Result",
+    "text": "Verify the Result\nCheck that the Service and Deployment were created:\nkubectl get service valkey-sample\nkubectl get deployment valkey-sample\nkubectl wait --for=condition=available deployment/valkey-sample --timeout=180s\nThen check the custom resource status:\nkubectl get valkey valkey-sample -o=jsonpath='{.status.phase}{\"\\n\"}{.status.readyReplicas}{\"\\n\"}'\nExpected output:\nReady\n1\nIf you want the full object:\nkubectl get valkey valkey-sample -o yaml",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#what-this-walkthrough-proved",
+    "href": "acts/basic-operator-in-practice.html#what-this-walkthrough-proved",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "What This Walkthrough Proved",
+    "text": "What This Walkthrough Proved\nThis walkthrough was validated on a fresh local kind cluster. The end result was:\n\nCRD installed successfully\nValkey sample created successfully\nService created\nDeployment created\npod reached Running\nstatus.phase=Ready\nstatus.readyReplicas=1",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/basic-operator-in-practice.html#cleanup",
+    "href": "acts/basic-operator-in-practice.html#cleanup",
+    "title": "Create a Basic Operator: Commands and Code",
+    "section": "Cleanup",
+    "text": "Cleanup\nDelete the sample and remove the cluster when you are done:\nkubectl delete -f config/samples/cache_v1alpha1_valkey.yaml\nkind delete cluster --name valkey-operator-doc\nThe important lesson from this chapter is not the size of the controller. It is the full end-to-end chain:\n\ndefine the API\nwrite reconcile logic\ninstall the CRD\nrun the manager\napply a CR\nwatch child resources appear\npublish status back to the CR",
+    "crumbs": [
+      "<span class='chapter-number'>4</span>  <span class='chapter-title'>Create a Basic Operator: Commands and Code</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html",
+    "href": "acts/04-operator-paths.html",
+    "title": "The Workstreams We Actually Explored",
+    "section": "",
+    "text": "Why We Needed Multiple Tracks\nThis section is not theory. These were the real implementation and study tracks we used to understand the problem from different angles.\nIf we had looked at only one operator, we would have missed too much:\nThat is why this booklet treats them as workstreams, not as random options in a table.",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#why-we-needed-multiple-tracks",
+    "href": "acts/04-operator-paths.html#why-we-needed-multiple-tracks",
+    "title": "The Workstreams We Actually Explored",
+    "section": "",
+    "text": "the no-operator path teaches raw mechanics\nOpsTree shows what a working production-style operator feels like\nour scratch-built operator shows how the control flow changes when we own the CRD, controller, annotations, and webhook\nthe official operator shows what an upstream architecture looks like when it already has ValkeyCluster and internal ValkeyNode objects",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#workstream-1-no-operator",
+    "href": "acts/04-operator-paths.html#workstream-1-no-operator",
+    "title": "The Workstreams We Actually Explored",
+    "section": "Workstream 1: No-Operator",
+    "text": "Workstream 1: No-Operator\nThis path kept the mechanics exposed:\n\nmanual cluster formation\ndirect Kubernetes objects\nshell-driven operational steps\nminimal abstraction hiding what happens\n\nThis was useful because it forced us to learn:\n\nwhat resources really have to exist\nhow pods come up\nwhat the cluster needs before it can form\nwhere day-two work becomes painful without controller logic",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#workstream-2-opstree",
+    "href": "acts/04-operator-paths.html#workstream-2-opstree",
+    "title": "The Workstreams We Actually Explored",
+    "section": "Workstream 2: OpsTree",
+    "text": "Workstream 2: OpsTree\nOpsTree gave us a working operator-shaped reference:\n\ncluster CRD\ncontroller-managed resources\nStatefulSets\nPVC-backed workloads\na more realistic operational lifecycle\n\nThis helped us move from raw mechanics to a more practical operator model.",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#workstream-3-our-scratch-built-operator",
+    "href": "acts/04-operator-paths.html#workstream-3-our-scratch-built-operator",
+    "title": "The Workstreams We Actually Explored",
+    "section": "Workstream 3: Our Scratch-Built Operator",
+    "text": "Workstream 3: Our Scratch-Built Operator\nThis track mattered because we moved from studying operators to building one ourselves.\nThe important parts were:\n\nour own ValkeyCluster CRD\nour own controller logic\ngenerated ConfigMap, Service, StatefulSet, and job resources\nannotation-based signaling for shard anti-affinity\na mutating webhook that patches the final pod spec before scheduling\n\nThis is where the design became concrete, because we had to decide exactly where each policy belonged.",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#workstream-4-official-valkey-operator-plus-our-changes",
+    "href": "acts/04-operator-paths.html#workstream-4-official-valkey-operator-plus-our-changes",
+    "title": "The Workstreams We Actually Explored",
+    "section": "Workstream 4: Official Valkey Operator Plus Our Changes",
+    "text": "Workstream 4: Official Valkey Operator Plus Our Changes\nThe official operator already had a strong base:\n\nValkeyCluster\ninternal ValkeyNode\ncluster bootstrap logic\nrolling updates\ndegraded-state recovery\nTLS and ACL support\nsupport for both StatefulSet and Deployment\n\nOur work here was not to throw that away. It was to identify the missing production-facing pieces and shape them in a way that fits the existing architecture.",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#side-by-side-comparison",
+    "href": "acts/04-operator-paths.html#side-by-side-comparison",
+    "title": "The Workstreams We Actually Explored",
+    "section": "Side-by-Side Comparison",
+    "text": "Side-by-Side Comparison\n\n\n\n\n\n\n\n\n\n\n\nPath\nDay 1\nDay 2\nTransparency\nProduction fit\nWhat it taught us\n\n\n\n\nNo-operator\nsimple to start\nheavier to maintain\nhighest\nweaker long-term\nforced us to understand every moving part\n\n\nOpsTree\nmore setup upfront\ncalmer operations\nmedium\nstrong\nshowed a practical operator-first workflow\n\n\nScratch-built operator\nhighest ownership burden\nflexible if maintained well\nhigh\ndepends on long-term commitment\nlet us encode webhook and shard-affinity behavior ourselves\n\n\nOfficial operator plus our design direction\ngood upstream base\nstronger if gaps are closed\nmedium\npotentially strongest\nshowed where PVC handling and shard-safe placement need to grow",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/04-operator-paths.html#what-these-workstreams-taught-us",
+    "href": "acts/04-operator-paths.html#what-these-workstreams-taught-us",
+    "title": "The Workstreams We Actually Explored",
+    "section": "What These Workstreams Taught Us",
+    "text": "What These Workstreams Taught Us\nTogether, the four paths gave us a complete picture:\n\nno-operator taught us the raw mechanics\nOpsTree showed what a mature operator workflow feels like\nthe scratch-built path showed where to place our own control hooks\nthe official path showed where upstream can be extended instead of replaced\n\nThe next three chapters go into the technical details of those implementation tracks.",
+    "crumbs": [
+      "<span class='chapter-number'>5</span>  <span class='chapter-title'>The Workstreams We Actually Explored</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html",
+    "href": "acts/scratch-and-opstree-flow.html",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "",
+    "text": "High-Level Control Flow\nThis chapter describes the work pattern we followed in our own operator and the control shape we learned from the OpsTree-style approach.\nOpsTree gave us a practical reference for the overall backbone:\nOur scratch-built operator followed that same backbone and added our own annotation and mutating-webhook path for shard-aware anti-affinity.\nThe key idea is simple:\nflowchart TD\n  A[\"User applies ValkeyCluster CR\"] --&gt; B[\"API server validates request\"]\n  B --&gt; C[\"ValkeyCluster stored in etcd\"]\n  C --&gt; D[\"Controller receives watch event from API server\"]\n  D --&gt; E[\"Create ConfigMap, headless Services, client Service, StatefulSets\"]\n  E --&gt; F{\"shardReplicaAntiAffinity = true?\"}\n  F -- yes --&gt; G[\"Add anti-affinity annotation to pod template\"]\n  F -- no --&gt; H[\"Keep pod template unchanged\"]\n  G --&gt; I[\"API server validates and stores child resources\"]\n  H --&gt; I\n  I --&gt; J[\"StatefulSet controller creates Pod objects\"]\n  J --&gt; K[\"API server admission handles Pod create\"]\n  K --&gt; L{\"Annotation present?\"}\n  L -- yes --&gt; M[\"Mutating webhook patches shard anti-affinity\"]\n  L -- no --&gt; N[\"Pod spec remains unchanged\"]\n  M --&gt; O[\"Scheduler assigns node according to anti-affinity and other rules\"]\n  N --&gt; O\n  O --&gt; P[\"Kubelet starts pod on assigned node\"]\n  P --&gt; U[\"CNI plugin assigns IP and routing\"]\n  U --&gt; Q[\"Operator-managed bootstrap introduces nodes\"]\n  Q --&gt; R[\"Assign slots to primaries\"]\n  R --&gt; S[\"Attach replicas to chosen primaries\"]\n  S --&gt; T[\"Operator updates cluster status to Ready\"]",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#step-by-step-runtime-flow",
+    "href": "acts/scratch-and-opstree-flow.html#step-by-step-runtime-flow",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "Step-by-Step Runtime Flow",
+    "text": "Step-by-Step Runtime Flow\nThe control flow above becomes easier to follow if we break it into exact stages.\n\n1. The Cluster CR Is Applied\n\nthe user applies ValkeyCluster\nthe API server validates the object against the CRD schema\nonce valid, the object is persisted in etcd\n\nFrom the controller point of view, it is watching the API server. The API server is backed by etcd, so this is how the controller learns about the new desired state.\n\n\n2. The Controller Creates the Base Resources\nAfter the watch event arrives, the controller creates the resources required for the cluster to exist:\n\nConfigMap\nheadless Services for stable pod identity\nclient-facing Service\nStatefulSet objects\nsupporting resources such as PDBs or bootstrap jobs, depending on the operator design\n\nIn our scratch-built operator, the StatefulSet pod template is also the place where we attach the signal for shard-aware scheduling.\n\n\n3. The Annotation Signals the Webhook\nIf shardReplicaAntiAffinity: true is set on the cluster:\n\nthe controller adds an annotation to the pod template\nthe StatefulSet later creates Pod objects from that template\nwhen the pod create request reaches admission, the webhook sees the annotation\nthe webhook injects the final anti-affinity rules into the pod spec\n\nThis was an important design choice:\n\nthe controller decides which pods need special treatment\nthe webhook decides how the pod spec should be mutated before scheduling",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#why-we-used-annotation-plus-webhook-here",
+    "href": "acts/scratch-and-opstree-flow.html#why-we-used-annotation-plus-webhook-here",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "Why We Used Annotation Plus Webhook Here",
+    "text": "Why We Used Annotation Plus Webhook Here\nIn this operator design, the annotation-plus-webhook path gave us a clean separation:\n\nthe controller kept the cluster-level decision logic\nthe webhook handled the last-mile mutation at pod creation time\nthe scheduler still received a normal Kubernetes pod spec with anti-affinity applied\n\nThat made the scheduling path explicit without hardcoding every anti-affinity rule into a single static manifest.",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#what-the-webhook-actually-does",
+    "href": "acts/scratch-and-opstree-flow.html#what-the-webhook-actually-does",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "What the Webhook Actually Does",
+    "text": "What the Webhook Actually Does\nThe webhook is not mutating all pods in the namespace. That would be dangerous.\nThe logic is intentionally narrow:\n\nit only runs for pod create requests\nit only targets pods with the cluster label\nit only patches pods carrying the shard anti-affinity annotation\n\nThen it injects anti-affinity so a pod is kept away from its paired leader or follower on the same Kubernetes node.",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#after-scheduling-the-cluster-still-is-not-formed",
+    "href": "acts/scratch-and-opstree-flow.html#after-scheduling-the-cluster-still-is-not-formed",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "After Scheduling, the Cluster Still Is Not Formed",
+    "text": "After Scheduling, the Cluster Still Is Not Formed\nEven once the pods are running, the Valkey cluster does not exist yet in the logical sense.\nAt this stage, the operator-managed bootstrap flow still has to:\n\nidentify which pods are ready\nintroduce them to each other with CLUSTER MEET\nassign slots to the primary nodes\nattach replicas to the intended primaries\nwait for the replication relationship to settle\n\nOnly after that can the cluster be considered truly ready.",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#bootstrap-and-topology-formation",
+    "href": "acts/scratch-and-opstree-flow.html#bootstrap-and-topology-formation",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "Bootstrap and Topology Formation",
+    "text": "Bootstrap and Topology Formation\nThis is the part that turns Kubernetes resources into a real Valkey cluster:\n\nall required pods come up\nbootstrap logic discovers their addresses\nisolated nodes are introduced into one cluster\nprimaries receive slot ownership\nreplicas are attached to their matching primary\nthe controller checks the resulting topology and status\nstatus is updated to Ready",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#what-we-learned-from-this-flow",
+    "href": "acts/scratch-and-opstree-flow.html#what-we-learned-from-this-flow",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "What We Learned From This Flow",
+    "text": "What We Learned From This Flow\nThis workstream gave us several concrete lessons:\n\nwatching through the API server is one thing; forming the live Valkey cluster is another\na running pod is not the same as a joined cluster member\nadmission webhooks must be scoped very tightly or they can block the operator itself\nshard anti-affinity only works if replica pairing is deterministic enough to match the scheduling policy\nnodes.conf, PVCs, and runtime cluster commands all matter after the pod is already running\n\nThat is why this workstream was more than a controller exercise. It was where resource reconciliation, admission mutation, scheduling, and live Valkey topology all met in one place.",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/scratch-and-opstree-flow.html#runtime-issues-we-actually-hit-while-building-it",
+    "href": "acts/scratch-and-opstree-flow.html#runtime-issues-we-actually-hit-while-building-it",
+    "title": "Scratch-Built Operator and OpsTree-Style Flow",
+    "section": "Runtime Issues We Actually Hit While Building It",
+    "text": "Runtime Issues We Actually Hit While Building It\nThe learnings from this operator were not abstract. They came from failures on a real cluster.\n\n\n\n\n\n\n\n\nIssue\nWhat happened\nWhat we changed\n\n\n\n\nleader election RBAC\nthe manager could not become leader without leases permissions\nadded coordination.k8s.io/leases RBAC from day one\n\n\nwebhook self-dependency\nthe mutating webhook tried to intercept the operator’s own pod creation\nscoped the webhook to only mutate cluster pods with the right label\n\n\nwebhook trust\na bad caBundle or serving certificate blocked pod creation\ngenerated the CA and serving certs together and kept one source of truth\n\n\nPVC defaulting\nstorageClassName: \"\" prevented the default storage class from being used\nleft the field unset when the user did not specify it\n\n\nPVC binding vs anti-affinity\nearly node-local PVC binding conflicted with leader-follower anti-affinity and could reintroduce L-F SPOF risk or pod will goes in pending\nused a StorageClass with WaitForFirstConsumer so PVC binding happened after scheduler placement, and kept shard anti-affinity enabled\n\n\noptimistic reconcile\nthe controller expected new child resources to be readable immediately\ntreated early NotFound as convergence-in-progress and requeued\n\n\ndeterministic pairing\nautomatic replica assignment did not always match ordinal assumptions\nmoved to an explicit bootstrap path where the intended replica relationship is known\n\n\n\nTwo lessons mattered especially for shard-aware placement:\n\npod-name-based anti-affinity is only safe when bootstrap guarantees the same pairing model\nseeing a seed node in CLUSTER NODES is not enough to prove the full cluster bootstrap finished",
+    "crumbs": [
+      "<span class='chapter-number'>6</span>  <span class='chapter-title'>Scratch-Built Operator and OpsTree-Style Flow</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-runtime.html",
+    "href": "acts/official-operator-runtime.html",
+    "title": "Official Valkey Operator",
+    "section": "",
+    "text": "The Two-Level Model\nThe official operator follows a more layered design than the scratch-built operator. The most important difference is that it uses:\nThis makes the runtime flow more detailed, but also more explicit.\nAt a high level:\nThat means cluster intent and per-node workload management are separated.",
+    "crumbs": [
+      "<span class='chapter-number'>7</span>  <span class='chapter-title'>Official Valkey Operator</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-runtime.html#the-two-level-model",
+    "href": "acts/official-operator-runtime.html#the-two-level-model",
+    "title": "Official Valkey Operator",
+    "section": "",
+    "text": "ValkeyCluster describes the whole cluster\nthe operator calculates the topology\nit creates one ValkeyNode per required Valkey member\nthe ValkeyNode controller then creates the actual workload for that member",
+    "crumbs": [
+      "<span class='chapter-number'>7</span>  <span class='chapter-title'>Official Valkey Operator</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-runtime.html#runtime-flow-step-by-step",
+    "href": "acts/official-operator-runtime.html#runtime-flow-step-by-step",
+    "title": "Official Valkey Operator",
+    "section": "Runtime Flow, Step by Step",
+    "text": "Runtime Flow, Step by Step\n\n1. CRDs Are Already Installed\nBefore the user does anything, the cluster already knows the custom resource definitions.\nThat means Kubernetes understands that these resource kinds exist:\n\nValkeyCluster\nValkeyNode\n\n\n\n2. The User Applies ValkeyCluster\nThe user submits a cluster-level object that contains settings such as:\n\nshard count\nreplica count\nimage\nscheduling rules\nTLS or ACL configuration\n\n\n\n3. The API Server Validates and Stores the Cluster Object\nThe API server:\n\nvalidates the object against the CRD schema\nstores the object in etcd if valid\n\nAt this point, desired state exists in the Kubernetes control plane.\n\n\n4. The Operator Watches the Cluster Object\nThe operator is watching the API server for ValkeyCluster changes.\nOnce the new object appears, reconcile starts.\n\n\n5. The Operator Creates Cluster-Level Resources\nThe first resources are cluster-scoped supporting objects, such as:\n\nheadless Service\nConfigMap\ninternal auth or ACL resources\n\nThese are again validated by the API server and persisted in etcd.\n\n\n6. The Operator Calculates Desired Topology\nThe operator calculates how many Valkey members are needed:\ntotal members = shards × (1 + replicas)\nFor example:\n\n3 shards\n1 replica per shard\ntotal = 6 Valkey members\n\n\n\n7. The Operator Creates Internal ValkeyNode Objects\nFor each required member, the operator creates one ValkeyNode.\nThese are not Kubernetes worker nodes. They are internal records for the individual Valkey members the cluster should contain.\n\n\n8. The API Server Stores Those ValkeyNode Objects\nNow the topology is represented in more detail:\n\ncluster-level intent in ValkeyCluster\nper-member intent in ValkeyNode\n\n\n\n9. The ValkeyNode Controller Creates Real Workloads\nThe ValkeyNode controller reads the internal node objects and creates the real runnable workload for each one:\n\nStatefulSet\nor Deployment, depending on the selected workload type\n\nIn the common path:\n\n1 ValkeyNode = 1 workload = 1 pod\n\n\n\n10. The Scheduler and Kubelet Bring Up the Pods\nFrom here the standard Kubernetes flow takes over:\n\npod objects are created\nthe scheduler picks nodes\nkubelet pulls images, mounts ConfigMaps and Secrets, and starts containers\npod status is updated through the API server and stored in etcd\n\n\n\n11. The Operator Observes Readiness and Pod IPs\nOnce the pods exist, the operator looks at the runtime information:\n\nwhich nodes are ready\nwhat pod IP each member has\nwhether the expected workloads actually came up\n\n\n\n12. The Operator Reads Live Valkey State\nThis is one of the most important parts of the official flow.\nAt this stage, the operator does not rely only on etcd or Kubernetes object status. It also reads the live Valkey cluster over the network using commands such as:\n\nCLUSTER INFO\nCLUSTER NODES\n\nThat is how it learns the actual runtime topology.\n\n\n13. The Operator Forms the Cluster\nIf nodes are still isolated, the operator introduces them with:\n\nCLUSTER MEET\n\nThen it performs the logical topology setup:\n\nassign slots to primaries\nattach replicas to primaries\n\n\n\n14. The Operator Verifies Health\nIt then checks:\n\nexpected shard count\nexpected replica count\nslot coverage across all 16384 slots\nreadiness of the formed cluster\n\n\n\n15. The Operator Updates Cluster Status\nWhen those checks pass, the operator updates ValkeyCluster.status and marks the cluster ready.\nThat status update goes back through the API server and is stored in etcd.\n\n\n16. The Loop Never Really Stops\nThis same reconcile structure keeps running for:\n\nscale-out\nscale-in\nrolling updates\npod restart recovery\ntopology drift\ndegraded-state handling",
+    "crumbs": [
+      "<span class='chapter-number'>7</span>  <span class='chapter-title'>Official Valkey Operator</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-runtime.html#why-this-architecture-matters",
+    "href": "acts/official-operator-runtime.html#why-this-architecture-matters",
+    "title": "Official Valkey Operator",
+    "section": "Why This Architecture Matters",
+    "text": "Why This Architecture Matters\nThe official operator is important because it separates:\n\ncluster-level desired state\ninternal node-level desired state\nworkload reconciliation\nlive cluster observation\n\nThat separation is what made it possible for us to think about changes such as persistence and shard-aware placement in a more architecture-friendly way.",
+    "crumbs": [
+      "<span class='chapter-number'>7</span>  <span class='chapter-title'>Official Valkey Operator</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html",
+    "href": "acts/official-operator-our-changes.html",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "",
+    "text": "Upstream Status Snapshot\nOnce we understood the official operator runtime, the next question was not “can it run at all?” It clearly can.\nThe question became:\nWhat is still missing for our production use case, and how should those pieces be added without breaking the architecture that is already there?\nTwo tracks mattered most:\nThis chapter is not only about design ideas. It is also about what happened when those ideas were taken upstream.\nThat gives this chapter a useful split:",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#upstream-status-snapshot",
+    "href": "acts/official-operator-our-changes.html#upstream-status-snapshot",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "",
+    "text": "On May 5, 2026, the persistence track merged upstream as PR #149: Add ValkeyNode-managed persistence support.\nAs of May 11, 2026, the shard-aware placement track is still in review as PR #163: feat: add shard-aware topology spread constraints.\n\n\n\none part of our work is now part of the official operator\none part is still shaping the upstream design conversation",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#change-track-1-pvc-backed-persistence",
+    "href": "acts/official-operator-our-changes.html#change-track-1-pvc-backed-persistence",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Change Track 1: PVC-Backed Persistence",
+    "text": "Change Track 1: PVC-Backed Persistence\nThe persistence discussion changed over time. That is important, because the final direction only makes sense after seeing what the earlier approach could and could not do.\n\nFirst Attempt: StatefulSet volumeClaimTemplates\nThe earliest persistence experiment attached storage through the StatefulSet path.\nThat meant:\n\npersistence was tied directly to the StatefulSet workload\nthe pod mounted storage coming from volumeClaimTemplates\nthe design was naturally centered around the StatefulSet resource itself\n\nThis was a reasonable first step because it is a common Kubernetes pattern for stateful workloads.\n\n\nWhy We Did Not Stop There\nWe did not continue with the pure volumeClaimTemplates path for several reasons.\n\n1. It was too tightly coupled to one workload path\nThe official operator architecture is centered around ValkeyNode.\nThat means the real owner of “this Valkey member needs persistence” is not the raw StatefulSet template. It is the ValkeyNode object that represents that member.\n\n\n2. It made persistence feel like a workload detail instead of a node-level contract\nWhat we actually wanted was:\n\ncluster spec declares persistence\nthat spec is propagated to each ValkeyNode\neach node manages its own PVC lifecycle\n\nThat matches the official architecture much better than hiding persistence only inside a workload template.\n\n\n3. volumeClaimTemplates are awkward when the storage story has to evolve\nOur design requirements were not just “attach a volume once.”\nWe also cared about:\n\nexplicit reclaim behavior\nclearer status when PVCs are pending\nresize-aware behavior\nnode-level visibility\n\nThat becomes harder when the storage logic is buried inside volumeClaimTemplates, especially when the official operator already has a per-node abstraction and when StatefulSet storage changes need careful handling.\n\n\n4. We wanted the PVC lifecycle to be explicit and testable\nAt the node level, we could reason much more clearly about:\n\nwhen the PVC is created\nwhen it is ready\nwhen it is resized\nwhether it should be retained or deleted\n\nThat is a much cleaner operational story.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#the-direction-we-moved-to-valkeynode-managed-pvcs",
+    "href": "acts/official-operator-our-changes.html#the-direction-we-moved-to-valkeynode-managed-pvcs",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "The Direction We Moved To: ValkeyNode-Managed PVCs",
+    "text": "The Direction We Moved To: ValkeyNode-Managed PVCs\nThe design we moved toward was:\n\nadd persistence to ValkeyCluster\npropagate that persistence block to each ValkeyNode\nlet the ValkeyNode controller create and manage a named PVC directly\nmount that PVC into the workload created for the node\nsurface PVC readiness and resize state through ValkeyNode.status",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#what-happened-upstream",
+    "href": "acts/official-operator-our-changes.html#what-happened-upstream",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "What Happened Upstream",
+    "text": "What Happened Upstream\nThis persistence direction is no longer just a proposal in our notes.\nIt landed upstream through PR #149, which means the official operator now has:\n\ncluster-level persistence intent on ValkeyCluster\npropagation of that intent into each ValkeyNode\nnode-managed PVC lifecycle\nreclaim behavior\nresize-aware status reporting",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#persistence-flow-with-the-new-design",
+    "href": "acts/official-operator-our-changes.html#persistence-flow-with-the-new-design",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Persistence Flow With the New Design",
+    "text": "Persistence Flow With the New Design\n\n\n\n\n\nflowchart TD\n  A[\"User sets persistence in ValkeyCluster\"] --&gt; B[\"ValkeyCluster controller propagates persistence to each ValkeyNode\"]\n  B --&gt; C[\"ValkeyNode controller reconciles PVC for that node\"]\n  C --&gt; D[\"PVC created as a first-class child resource\"]\n  D --&gt; E[\"Workload mounts named PVC\"]\n  E --&gt; F[\"Valkey stores data and nodes.conf on persistent storage\"]\n  F --&gt; G[\"ValkeyNode status reports PVC readiness and size state\"]",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#what-the-implementation-added",
+    "href": "acts/official-operator-our-changes.html#what-the-implementation-added",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "What the Implementation Added",
+    "text": "What the Implementation Added\nThe persistence work added several concrete pieces:\n\na PersistenceSpec\npropagation from ValkeyCluster to ValkeyNode\ndirect PVC creation in the ValkeyNode controller\nstatus conditions for:\n\nPVC ready\nPVC size ready\nresize in progress\nresize infeasible\n\nreclaim policy support:\n\nRetain\nDelete\n\nfinalizer-driven cleanup when delete behavior is requested",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#guardrails-we-added",
+    "href": "acts/official-operator-our-changes.html#guardrails-we-added",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Guardrails We Added",
+    "text": "Guardrails We Added\nThe design was not “allow anything.”\nWe also added guardrails so the operator behaves predictably:\n\npersistence requires StatefulSet\npersistence cannot be removed after creation\npersistence cannot be added later to an existing node\nstorage class is immutable\nsize can only grow, not shrink\n\nThese rules came from operational reality, not from theory.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#why-this-matches-the-official-architecture-better",
+    "href": "acts/official-operator-our-changes.html#why-this-matches-the-official-architecture-better",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Why This Matches the Official Architecture Better",
+    "text": "Why This Matches the Official Architecture Better\nThis approach fits the official operator because:\n\nValkeyCluster stays the cluster-level intent\nValkeyNode remains the owner of per-member state\nthe ValkeyNode controller remains the place that creates concrete child resources\nPVC lifecycle becomes visible and controllable at the same level as workload lifecycle\nthe design can clearly reject unsupported persistence combinations such as Deployment plus durable node storage\n\nThat is why this direction felt stronger than staying with raw StatefulSet claim templates.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#change-track-2-shard-aware-placement",
+    "href": "acts/official-operator-our-changes.html#change-track-2-shard-aware-placement",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Change Track 2: Shard-Aware Placement",
+    "text": "Change Track 2: Shard-Aware Placement\nThe second important track was placement of Master and its Replica.\nThe problem is not generic anti-affinity alone. The real problem is this:\n\na primary and its replica should not quietly land in the same failure domain\nthe placement policy should understand shard relationships, not just pod labels in general",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#what-we-learned-from-the-scratch-operator",
+    "href": "acts/official-operator-our-changes.html#what-we-learned-from-the-scratch-operator",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "What We Learned From the Scratch Operator",
+    "text": "What We Learned From the Scratch Operator\nIn the scratch-built operator, we explored shard safety through:\n\nan annotation on the pod template\na mutating webhook\nfinal anti-affinity injection during pod admission\n\nThat worked well for that architecture because we owned the admission path and the pairing model.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#why-the-official-operator-needed-a-different-shape",
+    "href": "acts/official-operator-our-changes.html#why-the-official-operator-needed-a-different-shape",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Why the Official Operator Needed a Different Shape",
+    "text": "Why the Official Operator Needed a Different Shape\nFor the official operator, a webhook-first model was less attractive because:\n\nthe operator already has a strong ValkeyNode abstraction\npod specs are already built in the ValkeyNode controller\nnative Kubernetes scheduling fields fit more naturally into that path\n\nSo instead of copying the webhook model directly, we explored a more native approach.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#the-direction-we-explored-topology-spread-constraints",
+    "href": "acts/official-operator-our-changes.html#the-direction-we-explored-topology-spread-constraints",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "The Direction We Explored: Topology Spread Constraints",
+    "text": "The Direction We Explored: Topology Spread Constraints\nThe design direction here was:\n\nexpose topology spread configuration at cluster level\npropagate it to each ValkeyNode\naugment the selector with shard-aware labels in the resource builder\nlet the scheduler enforce spread across the topology domain",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#what-is-happening-upstream-now",
+    "href": "acts/official-operator-our-changes.html#what-is-happening-upstream-now",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "What Is Happening Upstream Now",
+    "text": "What Is Happening Upstream Now\nThe placement track followed a different path.\nOur first anti-affinity-oriented PR was a step toward the problem, but the design discussion moved toward a more native Kubernetes model:\n\nuse topologySpreadConstraints\nkeep the API expressive\nadd shard-awareness by augmenting selectors and label keys\nsurface scheduling failure clearly when a strict policy cannot be satisfied\n\nThat is what the current upstream work in PR #163 represents.\nSo unlike persistence, placement should be described here as:\n\nan active upstream proposal\nalready implemented and tested in our branch\nstill under review as part of the official operator’s future direction\n\nThat made the control path cleaner:\n\nthe cluster spec declares the placement intent\nthe ValkeyNode spec carries the per-node version of that intent\nthe pod template is built with the final topology spread constraints\nthe scheduler sees a normal native Kubernetes scheduling spec",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#placement-flow-with-the-official-operator-direction",
+    "href": "acts/official-operator-our-changes.html#placement-flow-with-the-official-operator-direction",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "Placement Flow With the Official Operator Direction",
+    "text": "Placement Flow With the Official Operator Direction\n\n\n\n\n\nflowchart TD\n  A[\"User sets placement policy on ValkeyCluster\"] --&gt; B[\"ValkeyCluster controller copies policy to ValkeyNode\"]\n  B --&gt; C[\"ValkeyNode resource builder augments topology selectors with cluster and shard labels\"]\n  C --&gt; D[\"Workload pod template contains final topologySpreadConstraints\"]\n  D --&gt; E[\"Scheduler spreads primary and replica pods across topology domains\"]",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/official-operator-our-changes.html#what-is-still-open",
+    "href": "acts/official-operator-our-changes.html#what-is-still-open",
+    "title": "Official Operator: Our Changes and Design Direction",
+    "section": "What Is Still Open",
+    "text": "What Is Still Open\nThe placement design discussion is still evolving, and that should be stated clearly.\nWhat we already have is:\n\na much better understanding of the right insertion point\ncode showing how shard-aware topology spread can be generated\na cleaner upstream-friendly direction than a custom webhook dependency\n\nWhat still needs final agreement is the exact external API and how strict the placement guarantees should be under capacity pressure.",
+    "crumbs": [
+      "<span class='chapter-number'>8</span>  <span class='chapter-title'>Official Operator: Our Changes and Design Direction</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html",
+    "href": "acts/03-how-the-cluster-lives.html",
+    "title": "The Living Cluster",
+    "section": "",
+    "text": "Valkey Cluster Basics\nNow we discuss how the Valkey cluster works at runtime: how the client reaches the correct node, how headless services help with identity, how gossip spreads cluster knowledge, and what changes when pods restart.\nA Valkey cluster is not just a set of identical pods. Each member has a role and a relationship to the wider topology.\nThat is why cluster behavior cannot be reduced to “one service in front of many pods.”",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#valkey-cluster-basics",
+    "href": "acts/03-how-the-cluster-lives.html#valkey-cluster-basics",
+    "title": "The Living Cluster",
+    "section": "",
+    "text": "primaries own hash slots\nreplicas shadow those primaries and are candidates for promotion\ngossip keeps topology and failure knowledge moving between nodes\nclients need a current slot map so they can reach the right owner",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#how-the-client-connects-to-the-cluster",
+    "href": "acts/03-how-the-cluster-lives.html#how-the-client-connects-to-the-cluster",
+    "title": "The Living Cluster",
+    "section": "How the Client Connects to the Cluster",
+    "text": "How the Client Connects to the Cluster\nIn a real cluster, the client does not blindly send every request to one random node. A cluster-aware client learns the slot map and then targets the correct primary.\n\n\n\n\n\nsequenceDiagram\n  participant C as Client or API Layer\n  participant S as Startup Node\n  participant P as Slot Owner Primary\n\n  C-&gt;&gt;S: Initial connection\n  S--&gt;&gt;C: Cluster slot map\n  C-&gt;&gt;C: Cache slot-to-node mapping\n  C-&gt;&gt;P: Send command to slot owner\n  alt topology changed\n    P--&gt;&gt;C: Redirect or slot update\n    C-&gt;&gt;S: Refresh slot map\n    C-&gt;&gt;P: Retry to new owner\n  end\n\n\n\n\n\n\nThe important point is this:\n\na service or load balancer can provide the first entry point\nbut correct request routing depends on slot ownership\nafter failover, the client must refresh its view and talk to the new owner",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#normal-service-vs-headless-service",
+    "href": "acts/03-how-the-cluster-lives.html#normal-service-vs-headless-service",
+    "title": "The Living Cluster",
+    "section": "Normal Service vs Headless Service",
+    "text": "Normal Service vs Headless Service\nFor stateful systems, these two service types do different jobs.\n\n\n\n\n\n\n\n\nService type\nWhat it gives you\nWhy it matters here\n\n\n\n\nnormal Service\none stable service identity and generic traffic distribution\nuseful as an entry point\n\n\nheadless Service\npod-specific DNS records\ngives peers and controllers a stable way to address individual members\n\n\n\nThe headless service is especially important for StatefulSets because it gives each pod a stable DNS identity even when pod IPs change (Pod restart).\n\n\n\n\n\nflowchart TD\n  A[\"StatefulSet creates pod valkey-0\"] --&gt; B[\"Headless Service publishes pod DNS record\"]\n  B --&gt; C[\"valkey-0.service.namespace.svc\"]\n  C --&gt; D[\"Peers, operator, and diagnostics can target exact pod\"]",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#how-gossip-drives-failover",
+    "href": "acts/03-how-the-cluster-lives.html#how-gossip-drives-failover",
+    "title": "The Living Cluster",
+    "section": "How Gossip Drives Failover",
+    "text": "How Gossip Drives Failover\nValkey uses its cluster bus to exchange health and topology information between nodes. This is the gossip protocol that makes runtime failure handling self-contained.\nThe important point is that the operator may help with cluster formation, but normal leader failure detection and replica promotion happen inside the Valkey cluster itself.\n\n\n\n\n\nflowchart TD\n  A[\"Nodes exchange PINGs over the cluster bus\"] --&gt; B[\"No response within cluster-node-timeout\"]\n  B --&gt; C[\"Node is marked PFAIL in a local view\"]\n  C --&gt; D[\"PFAIL is gossiped across primary nodes\"]\n  D --&gt; E{\"Majority agrees the node is down?\"}\n  E -- no --&gt; A\n  E -- yes --&gt; F[\"Node is marked FAIL\"]\n  F --&gt; G[\"Eligible replica starts failover and requests authorization\"]\n  G --&gt; H{\"Majority ACK received?\"}\n  H -- no --&gt; D\n  H -- yes --&gt; I[\"Replica is promoted to the new primary\"]\n  I --&gt; J[\"Cluster stabilizes and clients are redirected\"]\n  J --&gt; K[\"Old primary can later rejoin as a replica\"]\n\n\n\n\n\n\nIn short:\n\nPossible Failure (PFAIL) is a local suspicion\nFAIL is a cluster-level decision\npromotion needs replica candidacy plus cluster agreement\nclients see the result through redirects and slot-map refresh, not through the gossip messages directly",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#what-happens-when-a-leader-or-follower-falls",
+    "href": "acts/03-how-the-cluster-lives.html#what-happens-when-a-leader-or-follower-falls",
+    "title": "The Living Cluster",
+    "section": "What Happens When a Leader or Follower Falls",
+    "text": "What Happens When a Leader or Follower Falls\n\nWhen a Leader Fails\n\n\n\n\n\nsequenceDiagram\n  participant C as Client\n  participant P as Current Primary\n  participant G as Gossip and Primary Consensus\n  participant R as Replica\n\n  C-&gt;&gt;P: Write request for owned slot\n  P--xC: Primary stops responding\n  G-&gt;&gt;G: Exchange PING and mark PFAIL\n  G-&gt;&gt;G: Majority confirms FAIL\n  R-&gt;&gt;G: Start failover and request authorization\n  G--&gt;&gt;R: Promotion acknowledged\n  R-&gt;&gt;R: Become new primary\n  C-&gt;&gt;R: Refresh slot map or follow redirect\n\n\n\n\n\n\nWhat changes after a leader failure:\n\nfailure is first suspected locally, then confirmed by cluster gossip\nan eligible replica is promoted to the new primary\nslot ownership moves to the promoted replica\nclients must refresh routing or follow redirects before writes fully normalize\nthe old primary can later return, but it usually comes back as a replica\n\nOne subtle point from the failover notes is important: failover changes roles, not pod placement. The pods usually stay on the same Kubernetes nodes; what changes is the internal Valkey role attached to each pod.\n\n\nWhen a Follower Fails\n\n\n\n\n\nsequenceDiagram\n  participant C as Client\n  participant P as Primary\n  participant F as Follower\n  participant G as Gossip\n\n  C-&gt;&gt;P: Write request\n  P-&gt;&gt;F: Replication stream\n  F--xP: Follower stops responding\n  G-&gt;&gt;G: Failure is noticed and shared\n  C-&gt;&gt;P: Client continues writing to the same primary\n  P-&gt;&gt;P: Cluster runs with reduced redundancy\n\n\n\n\n\n\nWhat changes after a follower failure:\n\nclient write routing usually does not change immediately because the primary still owns the slot\nreplication safety drops because one copy is missing or stale\nthe shard remains functional, but it is less protected until the follower returns or a replacement is attached\nif the follower comes back with persistent identity, rejoin is smoother; without that identity, recovery becomes more manual\n\nSo the networking story is inseparable from topology and failover:\n\nthe client only sees slot owners and redirects\nthe cluster uses gossip to decide whether a node is actually down\nsafe recovery depends on role transitions, storage identity, and physical separation all working together",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#a-pod-without-memory",
+    "href": "acts/03-how-the-cluster-lives.html#a-pod-without-memory",
+    "title": "The Living Cluster",
+    "section": "A Pod Without Memory",
+    "text": "A Pod Without Memory\nTwo situations lead to the same operational outcome:\n\na brand new pod joins the cluster for the first time\nan old pod restarts without its previous cluster state, usually because nodes.conf and related files were not preserved\n\nIn both cases, the cluster sees an unknown member. The pod starts the Valkey process, opens the client and cluster-bus ports, and waits to be introduced.\n\n\n\n\n\nsequenceDiagram\n  participant N as New or Restarted Pod\n  participant O as Operator or Script\n  participant E as Existing Node\n  participant G as Cluster Bus\n\n  N-&gt;&gt;N: Start Valkey\n  N-&gt;&gt;N: Check nodes.conf\n  N-&gt;&gt;N: No prior cluster memory\n  O-&gt;&gt;E: Trigger introduction\n  E-&gt;&gt;N: CLUSTER MEET\n  G-&gt;&gt;N: Share topology\n  O-&gt;&gt;N: Assign role and attach if replica\n\n\n\n\n\n\nThe important idea is that “pod running” is not the same as “node joined.” Without preserved cluster memory, the pod does not automatically count as the same logical member, even if the container name looks familiar.",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "acts/03-how-the-cluster-lives.html#the-return-with-memory",
+    "href": "acts/03-how-the-cluster-lives.html#the-return-with-memory",
+    "title": "The Living Cluster",
+    "section": "The Return With Memory",
+    "text": "The Return With Memory\nWhen the pod restarts with persistent storage and nodes.conf intact, the return path is much smoother.\n\nthe pod may come back on a new IP\nnodes.conf restores the previous node ID\npeers recognize the same member reconnecting\nthe cluster updates the current address for that identity\n\n\n\n\n\n\nsequenceDiagram\n  participant R as Restarted Pod\n  participant P as PVC\n  participant E as Existing Nodes\n  participant G as Cluster Gossip\n\n  R-&gt;&gt;P: Read nodes.conf and local data\n  P--&gt;&gt;R: Return existing node identity\n  R-&gt;&gt;E: Reconnect to known peers\n  E-&gt;&gt;G: Spread new address if needed\n  G-&gt;&gt;E: Refresh cluster view\n  R-&gt;&gt;R: Resume as same logical member\n\n\n\n\n\n\nThis is why persistent storage is not just about bytes. It is also about preserving cluster identity.\nThat difference is one of the central lessons of the whole booklet: a restarted container is not automatically the same cluster member unless the right memory survives with it.",
+    "crumbs": [
+      "<span class='chapter-number'>9</span>  <span class='chapter-title'>The Living Cluster</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html",
+    "href": "appendix/01-system-replays.html",
+    "title": "Appendix: System Replays",
+    "section": "",
+    "text": "Operator Reconcile Loop\nThis appendix keeps the most important flows in a tighter technical form. The order of events is intentionally direct here.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#operator-reconcile-loop",
+    "href": "appendix/01-system-replays.html#operator-reconcile-loop",
+    "title": "Appendix: System Replays",
+    "section": "",
+    "text": "The operator reads the custom resource and related child resources.\nThe API server returns the current spec, status, and object state.\nWatch events notify the operator when something changes.\nThe operator compares desired state with actual state.\nIf a mismatch exists, the operator reconciles by creating, updating, or deleting resources.\nThe operator updates status through the API server.\nThe API server persists the new state in etcd.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#basic-operator-creation-flow",
+    "href": "appendix/01-system-replays.html#basic-operator-creation-flow",
+    "title": "Appendix: System Replays",
+    "section": "Basic Operator Creation Flow",
+    "text": "Basic Operator Creation Flow\n\nCreate a local cluster such as kind create cluster --name valkey-operator-doc.\nRun kubebuilder init.\nRun kubebuilder create api.\nEdit api/v1alpha1/valkey_types.go.\nEdit internal/controller/valkey_controller.go.\nRun make manifests generate fmt.\nRun go build ./... and make test.\nInstall the CRD with make install.\nRun the manager.\nApply the sample custom resource with kubectl apply -f config/samples/cache_v1alpha1_valkey.yaml.\nVerify that the controller creates the child Service and Deployment.\nVerify that the custom resource reaches status.phase=Ready.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#scratch-built-operator-flow",
+    "href": "appendix/01-system-replays.html#scratch-built-operator-flow",
+    "title": "Appendix: System Replays",
+    "section": "Scratch-Built Operator Flow",
+    "text": "Scratch-Built Operator Flow\n\nApply the ValkeyCluster custom resource.\nThe API server validates the request.\nThe object is stored in etcd.\nThe controller receives the new desired state through the API server watch.\nThe controller creates the ConfigMap.\nThe controller creates the headless Services.\nThe controller creates the client-facing Service.\nThe controller creates the StatefulSet objects.\nIf shard anti-affinity is enabled, the controller adds the annotation to the pod template.\nThe API server validates and stores those child resources.\nThe StatefulSet controller creates Pod objects.\nThe API server admission chain handles each pod create request.\nIf the annotation is present, the mutating webhook injects the shard anti-affinity rules.\nThe scheduler assigns the pod to a node.\nThe kubelet starts the pod.\nOperator-managed bootstrap logic introduces nodes to each other.\nPrimaries receive slots.\nReplicas are attached to their intended primary.\nCluster status is checked and the cluster is marked ready.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#official-operator-runtime",
+    "href": "appendix/01-system-replays.html#official-operator-runtime",
+    "title": "Appendix: System Replays",
+    "section": "Official Operator Runtime",
+    "text": "Official Operator Runtime\n\nThe CRDs are already installed in the cluster.\nThe user applies ValkeyCluster.\nThe API server validates the object.\nThe object is stored in etcd.\nThe operator receives the watch event and starts reconcile.\nThe operator creates cluster-level resources such as Services, ConfigMaps, and auth-related objects.\nThose resources are validated and stored in etcd.\nThe operator calculates desired topology from shards and replicas.\nThe operator creates one internal ValkeyNode object per required member.\nThe API server stores those ValkeyNode objects.\nThe ValkeyNode controller creates the actual workloads from those internal objects.\nThe API server stores the workload objects.\nThe workload controllers create Pods.\nThe scheduler assigns nodes.\nThe kubelet starts containers and updates pod status.\nThe operator observes readiness and pod IPs.\nThe operator reads live Valkey state through network calls such as CLUSTER INFO and CLUSTER NODES.\nIf isolated nodes exist, the operator introduces them with CLUSTER MEET.\nThe operator assigns slots to primaries.\nThe operator attaches replicas to primaries.\nThe operator verifies shard count, replica count, and slot coverage.\nThe operator updates ValkeyCluster.status.\nThe API server stores the updated status in etcd.\nThe same reconcile pattern continues for scale, restart recovery, and topology drift.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#official-operator-persistence-direction",
+    "href": "appendix/01-system-replays.html#official-operator-persistence-direction",
+    "title": "Appendix: System Replays",
+    "section": "Official Operator Persistence Direction",
+    "text": "Official Operator Persistence Direction\n\nPersistence is declared on ValkeyCluster.\nThe ValkeyCluster controller copies that persistence block into each ValkeyNode.\nThe ValkeyNode controller reconciles a named PVC for the node.\nThe PVC becomes a first-class child resource instead of hiding inside volumeClaimTemplates.\nThe pod mounts that PVC.\nThe node stores persistent data and nodes.conf there.\nStatus conditions report whether the PVC is ready and whether the requested size is satisfied.\nReclaim policy and finalizers control retain-vs-delete behavior on node deletion.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#official-operator-placement-direction",
+    "href": "appendix/01-system-replays.html#official-operator-placement-direction",
+    "title": "Appendix: System Replays",
+    "section": "Official Operator Placement Direction",
+    "text": "Official Operator Placement Direction\n\nPlacement intent is declared on ValkeyCluster.\nThe controller propagates that intent to each ValkeyNode.\nThe ValkeyNode resource builder augments topology spread constraints with shard-aware labels.\nThe workload pod template contains the final scheduling rules.\nThe scheduler places nodes using those native Kubernetes constraints.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#client-routing-flow",
+    "href": "appendix/01-system-replays.html#client-routing-flow",
+    "title": "Appendix: System Replays",
+    "section": "Client Routing Flow",
+    "text": "Client Routing Flow\n\nThe client connects to a startup node or API layer.\nThe startup node returns the current slot map.\nThe client caches the slot-to-node mapping.\nThe client sends the command to the primary that owns the target slot.\nIf topology changed, the client receives redirect information.\nThe client refreshes the slot map and retries against the new owner.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#headless-service-identity-flow",
+    "href": "appendix/01-system-replays.html#headless-service-identity-flow",
+    "title": "Appendix: System Replays",
+    "section": "Headless Service Identity Flow",
+    "text": "Headless Service Identity Flow\n\nThe StatefulSet creates a pod such as valkey-0.\nThe headless Service publishes a DNS record for that exact pod.\nPeers and the operator use that DNS name to address the specific member.\nIf the pod restarts, the IP may change but the DNS identity pattern remains stable.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#new-pod-join",
+    "href": "appendix/01-system-replays.html#new-pod-join",
+    "title": "Appendix: System Replays",
+    "section": "New Pod Join",
+    "text": "New Pod Join\n\nA pod starts and opens the client and cluster-bus ports.\nValkey checks for nodes.conf.\nNo prior cluster memory is found.\nAn operator or script triggers the introduction flow.\nAn existing node performs CLUSTER MEET.\nTopology information spreads across the cluster bus.\nThe new member is assigned its role.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#restart-with-pvc",
+    "href": "appendix/01-system-replays.html#restart-with-pvc",
+    "title": "Appendix: System Replays",
+    "section": "Restart With PVC",
+    "text": "Restart With PVC\n\nA pod restarts and the same PVC is attached again.\nValkey reads nodes.conf and local cluster data.\nThe previous node ID is recovered.\nThe pod reconnects to known peers.\nIf the pod IP changed, peers update the current address for that node ID.\nReplication catches up if needed.\nThe member resumes as the same logical node.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#restart-without-pvc",
+    "href": "appendix/01-system-replays.html#restart-without-pvc",
+    "title": "Appendix: System Replays",
+    "section": "Restart Without PVC",
+    "text": "Restart Without PVC\n\nA pod restarts without the files that preserve identity.\nnodes.conf is missing.\nA new node ID is generated.\nThe pod has no local knowledge of the old cluster.\nAutomatic rejoin does not happen.\nAn operator or script must reintroduce the node.\nRole assignment and topology sync happen again.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#leader-failure-and-failover",
+    "href": "appendix/01-system-replays.html#leader-failure-and-failover",
+    "title": "Appendix: System Replays",
+    "section": "Leader Failure and Failover",
+    "text": "Leader Failure and Failover\n\nA client sends traffic to the current slot owner.\nThe leader becomes unavailable.\nGossip spreads failure information across the cluster bus.\nA replica is promoted according to cluster state.\nSlot ownership changes to the new primary.\nClients refresh routing and start sending traffic to the promoted node.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/01-system-replays.html#secret-delivery",
+    "href": "appendix/01-system-replays.html#secret-delivery",
+    "title": "Appendix: System Replays",
+    "section": "Secret Delivery",
+    "text": "Secret Delivery\n\nA Secret is created or updated through the Kubernetes API.\nThe API server validates and stores it in etcd.\nThe kubelet for the assigned node requests the Secret.\nThe Secret is delivered to the node.\nThe pod receives it as files or environment variables.\nThe application uses it for passwords, ACLs, or TLS material.",
+    "crumbs": [
+      "<span class='chapter-number'>10</span>  <span class='chapter-title'>Appendix: System Replays</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html",
+    "href": "appendix/02-code-and-design-references.html",
+    "title": "Appendix: Code and Design References",
+    "section": "",
+    "text": "Scratch-Built Operator\nThis appendix points to the repositories and design threads behind the work discussed in this booklet.",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html#scratch-built-operator",
+    "href": "appendix/02-code-and-design-references.html#scratch-built-operator",
+    "title": "Appendix: Code and Design References",
+    "section": "",
+    "text": "Our scratch-built operator repository: DharmendraChoudhary67/valkey-cluster-operator",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html#reference-operator",
+    "href": "appendix/02-code-and-design-references.html#reference-operator",
+    "title": "Appendix: Code and Design References",
+    "section": "Reference Operator",
+    "text": "Reference Operator\n\nOpsTree Redis Operator: OT-CONTAINER-KIT/redis-operator",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html#official-valkey-operator",
+    "href": "appendix/02-code-and-design-references.html#official-valkey-operator",
+    "title": "Appendix: Code and Design References",
+    "section": "Official Valkey Operator",
+    "text": "Official Valkey Operator\n\nUpstream project: valkey-io/valkey-operator\nOur fork used for design and implementation work: DharmendraChoudhary67/valkey-operator",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html#change-threads-we-worked-through",
+    "href": "appendix/02-code-and-design-references.html#change-threads-we-worked-through",
+    "title": "Appendix: Code and Design References",
+    "section": "Change Threads We Worked Through",
+    "text": "Change Threads We Worked Through\n\nEarlier StatefulSet volumeClaimTemplates persistence branch: codex/statefulset-pvc-storage\nEarlier StatefulSet persistence compare view: main…codex/statefulset-pvc-storage\nValkeyNode-managed persistence compare view: main…codex/valkeynode-managed-persistence",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  },
+  {
+    "objectID": "appendix/02-code-and-design-references.html#design-discussions",
+    "href": "appendix/02-code-and-design-references.html#design-discussions",
+    "title": "Appendix: Code and Design References",
+    "section": "Design Discussions",
+    "text": "Design Discussions\n\nPersistence design discussion: Issue #121\nShard-aware placement discussion: Issue #146",
+    "crumbs": [
+      "<span class='chapter-number'>11</span>  <span class='chapter-title'>Appendix: Code and Design References</span>"
+    ]
+  }
+]

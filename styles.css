@@ -1,0 +1,90 @@
+:root {
+  --ink: #243040;
+  --muted: #5c6776;
+  --accent: #9a3412;
+  --accent-soft: #f4ebe4;
+  --paper: #fffdf8;
+  --paper-2: #f7f2ea;
+  --line: #ddd4c8;
+}
+
+body {
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(154, 52, 18, 0.06), transparent 24%),
+    linear-gradient(180deg, var(--paper), var(--paper-2));
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.74;
+}
+
+h1,
+h2,
+h3,
+h4,
+.quarto-title-block .title {
+  color: #4a2314;
+  font-family: "Avenir Next", "Segoe UI", Arial, sans-serif;
+  letter-spacing: 0.01em;
+}
+
+.quarto-title-block .subtitle {
+  color: var(--muted);
+  font-style: italic;
+  max-width: 42rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+main.content {
+  max-width: 52rem;
+}
+
+p,
+li {
+  font-size: 1.03rem;
+}
+
+blockquote {
+  border-left: 4px solid var(--accent);
+  background: rgba(154, 52, 18, 0.05);
+  padding: 0.8rem 1rem;
+  border-radius: 0.35rem;
+}
+
+table {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--line);
+}
+
+thead {
+  background: rgba(154, 52, 18, 0.08);
+}
+
+.table {
+  margin: 1.25rem 0;
+}
+
+.callout {
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.04);
+}
+
+.callout.callout-note {
+  background: linear-gradient(180deg, rgba(247, 237, 231, 0.8), rgba(255, 255, 255, 0.95));
+}
+
+code,
+pre {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.mermaid {
+  margin: 1.5rem auto;
+}
+
+.quarto-title-block {
+  margin-bottom: 1.8rem;
+}
