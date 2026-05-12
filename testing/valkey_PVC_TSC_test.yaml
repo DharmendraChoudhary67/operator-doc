@@ -1,0 +1,28 @@
+apiVersion: valkey.io/v1alpha1
+kind: ValkeyCluster
+metadata:
+  name: valkey-tsc-pvc-demo
+spec:
+  shards: 3
+  replicas: 1
+
+  persistence:
+    size: 2Gi
+    reclaimPolicy: Retain
+
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+
+  config:
+    maxmemory: 100mb
+    maxmemory-policy: allkeys-lfu
+
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 500m
